@@ -30,6 +30,16 @@ if tmux list-sessions >/dev/null 2>&1; then
   tmux unbind-key S 2>/dev/null || true
   tmux unbind-key -n MouseDragEnd1Border 2>/dev/null || true
   tmux bind-key -n MouseDown1Pane select-pane -t = \; send-keys -M
+  if tmux list-commands new-pane >/dev/null 2>&1; then
+    # tmux 3.8 and newer: put back the floating-pane drag bindings.
+    tmux bind-key -n C-MouseDrag1Pane new-pane -M
+    tmux bind-key -n M-MouseDrag1Pane move-pane -M
+    tmux bind-key -n M-MouseDrag1Border move-pane -M
+  else
+    for k in C-MouseDrag1Pane M-MouseDrag1Pane M-MouseDrag1Border; do
+      tmux unbind-key -n "$k" 2>/dev/null || true
+    done
+  fi
   [ -f "$TMUX_CONF" ] && tmux source-file "$TMUX_CONF"
   echo "Removed sidebars from your running tmux server."
 fi

@@ -379,10 +379,29 @@ def run(c, work, codez):
     check("9. no duplicate sidebars after reloads",
           all(len(sidebar_panes(w)) == 1 for w in windows()))
 
+    modifier_drag_checks(c, W)
     width_checks(c, W)
 
     if args.claude:
         claude_checks(c, codez, close_via_x)
+
+
+def modifier_drag_checks(c, W):
+    """Ctrl/Option+drag must not open a floating shell or move panes (tmux 3.8 defaults)."""
+    win = tmux("display-message", "-p", "#{window_id}")
+    layout = lambda: tmux("list-panes", "-t", win, "-F",
+                          "#{pane_id} #{pane_left} #{pane_floating_flag} #{@sidebar}")
+    before = layout()
+    for mod, name in ((16, "Ctrl"), (8, "Option")):
+        for x0 in (W + 20, 5):  # main pane, then the sidebar
+            c.send("\x1b[<%d;%d;10M" % (mod, x0))
+            for dx in range(1, 16, 3):
+                c.send("\x1b[<%d;%d;12M" % (mod + 32, x0 + dx))
+            c.send("\x1b[<%d;%d;12m" % (mod, x0 + 16))
+            tmux("send-keys", "-X", "-t", win, "cancel", check=False)
+        time.sleep(0.5)
+        check("drag: %s+drag opens no pane and moves none" % name, layout() == before,
+              "before %r after %r" % (before, layout()))
 
 
 def width_checks(c, W):

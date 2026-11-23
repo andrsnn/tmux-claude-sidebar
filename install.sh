@@ -83,5 +83,5 @@ else
   say "Start tmux to see the sidebar."
 fi
 say "Restart any Claude Code sessions that are already running so they pick up the hooks."
-say "Note: this turns on tmux mouse mode. Hold Option (iTerm2/Terminal) or Shift"
-say "(most other terminals) while dragging to select text the usual way."
+say "Note: this turns on tmux mouse mode. Hold Option (iTerm2), Fn (Terminal.app)"
+say "or Shift (most other terminals) while dragging to select text the usual way."

@@ -75,8 +75,15 @@ config files (stow and similar) are edited in place and stay symlinks.
 
 ### Mouse mode
 
-The sidebar needs tmux mouse mode. With it on, hold Option (iTerm2, Terminal)
-or Shift (most other terminals) while dragging to select text normally.
+The sidebar needs tmux mouse mode. With it on, a drag selects text in tmux,
+or in Claude Code, which handles the mouse itself. To select text with your
+terminal instead, hold Option in iTerm2, Fn in Terminal.app, or Shift in most
+other terminals while dragging. In Terminal.app you can also turn off
+View > Allow Mouse Reporting.
+
+A drag with Ctrl or Option held does the same as a plain drag. tmux 3.8 would
+otherwise open a new floating pane with a shell in it (Ctrl) or move the pane
+(Option).
 
 ### Fonts
 
