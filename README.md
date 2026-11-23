@@ -6,6 +6,24 @@ that session is doing, so you can see which one is waiting for you.
 
 ![The sidebar next to a Claude Code session. Four windows show done, needs you, done and idle, and window 2's tab in the status bar is yellow because its bell rang.](docs/screenshot.png)
 
+## What the sidebar shows
+
+<img align="right" width="300" src="docs/sidebar.png" alt="Close-up of the sidebar: the session name with [−][+] buttons, four window rows with their status and an × each, and a list of tmux keys.">
+
+From the top:
+
+- **Session name**, and `[−]` `[+]` to make the sidebar narrower or wider.
+- **One row per window**: its number, name, Claude Code status and a `×`
+  to close it. The orange bar marks the window you are in.
+- **Status**: `● working` in blue, `! needs you` in yellow, `✓ done` in
+  green, `○ idle` in grey.
+- **Keys**: the tmux keys you use most. Click one, or press `Ctrl-b` and
+  then the key.
+
+<br clear="right">
+
+## Features
+
 - **Status per window**: `working` after you send a prompt, `needs you` when
   Claude asks for permission or asks you a question, `done` when it finishes,
   `idle` when a session has started but has no prompt yet. Windows without
@@ -30,6 +48,11 @@ that session is doing, so you can see which one is waiting for you.
   tab in the status bar turns yellow with a `!`.
 
 Every default tmux key still works. The only new key is `Ctrl-b S`.
+
+Clicking `×` on the "PR 33067 review" row shows this prompt at the bottom.
+`y` closes the window, `n` keeps it:
+
+![tmux asks: Close "PR 33067 review" and stop everything running in it? (y/n)](docs/close-prompt.png)
 
 ## Install
 
