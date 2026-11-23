@@ -4,29 +4,7 @@ A window list on the left of every tmux window, for running several Claude Code
 sessions side by side (one tmux window per git worktree). Each row shows what
 that session is doing, so you can see which one is waiting for you.
 
-```
- SESSION work
-
-▌ 1 Fix churn …  ● working   ×
-  2 Slack repl… ! needs you ×
-  3 PR 33067 r… ✓ done      ×
-  4 churn-summ… ○ idle      ×
-
- ───────────────────────────
-
- KEYS · press Ctrl-b first
-
- 1-9 jump to window
- n   next window
- p   previous window
- l   last window
- w   pick from list
- c   new window
- ,   rename window
- &   close window
- d   detach
- S   hide sidebar
-```
+![The sidebar next to a Claude Code session. Four windows show done, needs you, done and idle, and window 2's tab in the status bar is yellow because its bell rang.](docs/screenshot.png)
 
 - **Status per window**: `working` after you send a prompt, `needs you` when
   Claude asks for permission or asks you a question, `done` when it finishes,
@@ -38,6 +16,10 @@ that session is doing, so you can see which one is waiting for you.
 - **Click `×`** to close that window. tmux asks `(y/n)` first, then closes the
   window and stops everything running in it (Claude Code, the shell, and their
   child processes).
+- **Width**: 36 columns by default. Click `[−]` or `[+]` at the top of the
+  sidebar to make it 2 columns narrower or wider, or drag its right border.
+  The new width applies to every window and is kept after tmux restarts
+  (it is saved in `~/.tmux/claude-sidebar-width`).
 - **`Ctrl-b S`** hides or shows the sidebar in every window of the session. New
   windows follow the current setting.
 - **Window names** come from the title Claude Code gives its session, like
@@ -113,10 +95,10 @@ tmux server. The plugins in `~/.tmux/plugins` are left in place.
 
 ## How it works
 
-- Each window gets a 30-column pane on the left, marked with the pane option
+- Each window gets a 36-column pane on the left, marked with the pane option
   `@sidebar`. It runs `render.sh`, which redraws from `tmux list-windows` once
   a second.
-- tmux hooks add the pane to new windows, keep it 30 columns wide when the
+- tmux hooks add the pane to new windows, keep it at the chosen width when the
   terminal resizes, move focus back to the main pane if you land on the
   sidebar, and close a window once only the sidebar is left in it.
 - Claude Code hooks set the window option `@claude_state`:
@@ -137,8 +119,8 @@ tmux server. The plugins in `~/.tmux/plugins` are left in place.
 - **"needs you" lasts until the tool finishes.** After you approve a long
   command, the row says `needs you` until the command ends.
 - **One status per window.** Two Claude sessions in one window share it.
-- **Names are cut to 11 characters** at the default width. Set
-  `@claude_sidebar_width` to a larger number in `~/.tmux.conf` to widen it.
+- **Long names are cut** to 17 characters at the default width. Widen the
+  sidebar with `[+]` to see more.
 - Shift+Enter also needs your terminal to send it as a distinct key (most do,
   including iTerm2, Ghostty, kitty and WezTerm).
 

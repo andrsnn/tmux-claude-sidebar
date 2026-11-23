@@ -32,6 +32,7 @@ ap.add_argument("--claude", action="store_true")
 args = ap.parse_args()
 HOME = os.path.abspath(args.home)
 CONF = os.path.join(HOME, ".tmux.conf")
+WIDTH_FILE = os.path.join(HOME, ".tmux", "claude-sidebar-width")
 ENV = dict(os.environ, HOME=HOME, TERM="xterm-256color")
 ENV.pop("TMUX", None)
 ENV.pop("TMUX_PANE", None)
@@ -189,7 +190,10 @@ def run(c, work, codez):
     w1 = wait(lambda: sidebar_panes("work:1") and "work:1")
     check("first window gets a sidebar", w1)
     sb1 = sidebar_panes("work:1")[0]
-    check("sidebar is 30 columns", fmt(sb1, "#{pane_width}") == "30")
+    W = int(wait(lambda: tmux("show-options", "-gqv", "@claude_sidebar_width")))
+    check("sidebar has the configured width (%d)" % W, fmt(sb1, "#{pane_width}") == str(W))
+    if not os.path.exists(WIDTH_FILE):
+        check("default width is 36", W == 36, str(W))
     check("sidebar is not the active pane", fmt("work:1", "#{@sidebar}") != "1")
     check("window named from directory, codez- stripped",
           wait(lambda: fmt("work:1", "#{window_name}") == "churn"),
@@ -250,7 +254,7 @@ def run(c, work, codez):
     check("3. after re-show focus stays on main panes",
           all(fmt(w, "#{@sidebar}") != "1" for w in windows()))
 
-    # 4. Mouse. Sidebar is the left 30 columns starting at terminal row 0.
+    # 4. Mouse. The sidebar is the left W columns starting at terminal row 0.
     sb = sidebar_panes(current_window())[0]
     wait(lambda: row_of(sb, "close window") is not None)
     first = windows()[0]
@@ -283,7 +287,7 @@ def run(c, work, codez):
             if l.rstrip().endswith("×") and name in l and
             ("%2s" % fmt(win, "#{window_index}")) in l), None))
         c.buf = b""
-        c.click(28, y)  # last drawn column of a 30-wide sidebar
+        c.click(W - 2, y)  # last drawn column of the sidebar
         shown = wait(lambda: b"stop everything running" in c.buf, 4)
         c.send(answer)
         return shown
@@ -345,16 +349,20 @@ def run(c, work, codez):
     tmux("send-keys", "-t", bg_pane, "printf '\\a'", "Enter")
     check("6. bell in background window sets the ! flag",
           wait(lambda: "!" in fmt(bg, "#{window_flags}")), fmt(bg, "#{window_flags}"))
-    check("6. bell style is catppuccin yellow",
-          "#f9e2af" in tmux("show-options", "-gv", "window-status-bell-style").lower(),
-          tmux("show-options", "-gv", "window-status-bell-style"))
+    # Expand the tab format the way tmux draws it, for the bell window and for
+    # a window without the bell.
+    drawn = lambda w: fmt(w, "#{E:window-status-format}").lower()
+    check("6. bell window's tab is drawn yellow (catppuccin #f9e2af)",
+          "bg=#f9e2af" in drawn(bg), drawn(bg))
+    quiet = [w for w in windows() if w != bg and "!" not in fmt(w, "#{window_flags}")][0]
+    check("6. other tabs are not yellow", "#f9e2af" not in drawn(quiet), drawn(quiet))
 
     # 8. Resize the terminal; sidebars stay 30 wide.
     c.resize(120, 35)
     time.sleep(1.5)
     c.resize(200, 50)
-    check("8. after resizing, every sidebar is 30 columns",
-          wait(lambda: all(fmt(p, "#{pane_width}") == "30" for p in all_sidebars())),
+    check("8. after resizing, every sidebar keeps its width",
+          wait(lambda: all(fmt(p, "#{pane_width}") == str(W) for p in all_sidebars())),
           str([fmt(p, "#{pane_width}") for p in all_sidebars()]))
 
     # 9. source-file twice changes nothing.
@@ -371,8 +379,46 @@ def run(c, work, codez):
     check("9. no duplicate sidebars after reloads",
           all(len(sidebar_panes(w)) == 1 for w in windows()))
 
+    width_checks(c, W)
+
     if args.claude:
         claude_checks(c, codez, close_via_x)
+
+
+def width_checks(c, W):
+    """[−][+] buttons and border drags change every sidebar and persist."""
+    saved = open(WIDTH_FILE).read() if os.path.exists(WIDTH_FILE) else None
+    widths = lambda: {fmt(p, "#{pane_width}") for p in all_sidebars()}
+    try:
+        c.click(W - 3, 0)  # the + of [−][+] in the header row
+        check("width: [+] widens every sidebar by 2", wait(lambda: widths() == {str(W + 2)}), str(widths()))
+        check("width: saved for the next tmux start",
+              open(WIDTH_FILE).read().strip() == str(W + 2) if os.path.exists(WIDTH_FILE) else False)
+        c.click(W + 2 - 6, 0)  # the − (button positions follow the new width)
+        check("width: [−] narrows it again", wait(lambda: widths() == {str(W)}), str(widths()))
+        # Drag the border (terminal column W) six columns to the right.
+        x = W + 1
+        c.send("\x1b[<0;%d;10M" % x)
+        for dx in range(1, 7):
+            c.send("\x1b[<32;%d;10M" % (x + dx))
+        c.send("\x1b[<0;%d;10m" % (x + 6))
+        check("width: dragging the border sets the width for all sidebars",
+              wait(lambda: widths() == {str(W + 6)}), str(widths()))
+        c.prefix("c")
+        cur = wait(lambda: sidebar_panes(current_window()) and current_window())
+        check("width: new windows use the dragged width",
+              wait(lambda: widths() == {str(W + 6)}), str(widths()))
+    finally:
+        # Put back the user's own width.
+        if saved is None:
+            os.path.exists(WIDTH_FILE) and os.remove(WIDTH_FILE)
+            tmux("set-option", "-gu", "@claude_sidebar_width")
+        else:
+            with open(WIDTH_FILE, "w") as f:
+                f.write(saved)
+            tmux("set-option", "-g", "@claude_sidebar_width", saved.strip())
+        subprocess.run([os.path.join(HOME, ".tmux", "sidebar", "sidebar.sh"), "resize"],
+                       env=dict(ENV, TMUX=fmt("work", "#{socket_path},#{pid},0")))
 
 
 def descendants(pid):

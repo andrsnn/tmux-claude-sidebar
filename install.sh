@@ -77,6 +77,7 @@ if [ "$NO_RELOAD" = 0 ] && tmux list-sessions >/dev/null 2>&1; then
   tmux source-file "$TMUX_CONF"
   tmux list-panes -a -F '#{?@sidebar,#{pane_id},}' | grep . |
     while read -r p; do tmux respawn-pane -k -t "$p"; done || true
+  "$SIDEBAR_DIR/sidebar.sh" resize
   say "Reloaded your running tmux server."
 else
   say "Start tmux to see the sidebar."

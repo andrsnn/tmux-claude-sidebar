@@ -8,14 +8,51 @@
 #   sidebar.sh guard <window>         move focus off the sidebar
 #   sidebar.sh resize [window]        keep sidebars at their fixed width
 #   sidebar.sh cleanup                close windows left with only a sidebar
+#   sidebar.sh width +N|-N|N          change the sidebar width everywhere
+#   sidebar.sh dragged <window>       keep the width the user dragged to
 # POSIX sh. Never fails loudly: hooks should not spam the status line.
 
 DIR=$(cd "$(dirname "$0")" && pwd)
+# The chosen width survives tmux restarts in this file.
+WIDTH_FILE="$HOME/.tmux/claude-sidebar-width"
+DEFAULT_WIDTH=36
+MIN_WIDTH=24
+MAX_WIDTH=80
+
+valid_width() {
+  case "$1" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$1" -ge "$MIN_WIDTH" ] && [ "$1" -le "$MAX_WIDTH" ]
+}
 
 width() {
   w=$(tmux show-option -gqv @claude_sidebar_width)
-  case "$w" in ''|*[!0-9]*) w=30 ;; esac
+  valid_width "$w" && { echo "$w"; return; }
+  w=$(cat "$WIDTH_FILE" 2>/dev/null)
+  valid_width "$w" || w=$DEFAULT_WIDTH
+  tmux set-option -g @claude_sidebar_width "$w"
   echo "$w"
+}
+
+set_width() {
+  case "$1" in
+    +*|-*) w=$(( $(width) $1 )) ;;
+    *) w="$1" ;;
+  esac
+  case "$w" in ''|*[!0-9-]*) return 0 ;; esac
+  [ "$w" -lt "$MIN_WIDTH" ] && w=$MIN_WIDTH
+  [ "$w" -gt "$MAX_WIDTH" ] && w=$MAX_WIDTH
+  tmux set-option -g @claude_sidebar_width "$w"
+  mkdir -p "$(dirname "$WIDTH_FILE")" && echo "$w" > "$WIDTH_FILE"
+  resize
+}
+
+# After a border drag: if this window's sidebar changed width, make that the
+# width for every sidebar.
+dragged() {
+  p=$(window_sidebars "$1" | head -n 1)
+  [ -n "$p" ] || return 0
+  w=$(tmux display-message -p -t "$p" '#{pane_width}')
+  [ "$w" = "$(width)" ] || set_width "$w"
 }
 
 # Sidebar pane ids in a target (window, session, or -a for all).
@@ -88,6 +125,12 @@ click() {
       else
         tmux select-window -t "$win"
       fi ;;
+    h:)
+      # Header row: "[−][+]" sits in the last 6 drawn columns.
+      pw=$(tmux display-message -p -t "$pane" '#{pane_width}')
+      if [ "$x" -ge $((pw - 7)) ] && [ "$x" -le $((pw - 5)) ]; then set_width -2
+      elif [ "$x" -ge $((pw - 4)) ]; then set_width +2
+      fi ;;
     k:S) toggle "$(tmux display-message -p -t "$pane" '#{session_id}')" ;;
     k:?)
       # Same as typing Ctrl-b <key>: whatever the user has bound runs, so
@@ -132,6 +175,8 @@ case "$cmd" in
   guard) guard "$@" ;;
   resize) resize "$@" ;;
   cleanup) cleanup ;;
-  *) echo "usage: $0 ensure|ensure-session|ensure-all|toggle|click|guard|resize|cleanup" >&2; exit 2 ;;
+  width) set_width "$@" ;;
+  dragged) dragged "$@" ;;
+  *) echo "usage: $0 ensure|ensure-session|ensure-all|toggle|click|guard|resize|cleanup|width|dragged" >&2; exit 2 ;;
 esac
 exit 0

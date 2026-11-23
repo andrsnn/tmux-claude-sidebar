@@ -28,10 +28,12 @@ if tmux list-sessions >/dev/null 2>&1; then
   # Back to tmux's defaults, then re-read your config so any bindings of your
   # own for these keys come back.
   tmux unbind-key S 2>/dev/null || true
+  tmux unbind-key -n MouseDragEnd1Border 2>/dev/null || true
   tmux bind-key -n MouseDown1Pane select-pane -t = \; send-keys -M
   [ -f "$TMUX_CONF" ] && tmux source-file "$TMUX_CONF"
   echo "Removed sidebars from your running tmux server."
 fi
 
 rm -rf "$HOME/.tmux/sidebar"
+rm -f "$HOME/.tmux/claude-sidebar-width"
 echo "Done. Restart Claude Code sessions to drop the hooks."

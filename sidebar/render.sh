@@ -68,7 +68,9 @@ EOF
   line() { out="$out$1$EL
 "; row=$((row + 1)); }
 
-  line " ${GREY}SESSION${R} ${BOLD}$(fit "$sess" $((inner - 9)))${R}"
+  # "[−][+]" buttons at the right make the sidebar narrower or wider.
+  line " ${GREY}SESSION${R} ${BOLD}$(fit "$sess" $((inner - 15)))${R}${GREY}[${R}−${GREY}][${R}+${GREY}]${R}"
+  map="0=h:"
   line ""
 
   while IFS="$US" read -r idx wid active state name; do
