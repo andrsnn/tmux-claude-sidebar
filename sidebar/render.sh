@@ -56,12 +56,12 @@ stlabel() {
   case "$1" in
     working) st="${BLUE}● working${R}  " ;;
     needs)   st="${BYELLOW}! needs you${R}" ;;
-    review)  st="${YELLOW}◆ review${R}   " ;;
-    followup) st="${BMAGENTA}↩ follow up${R}" ;;   # unread
-    todo)    st="${MAGENTA}↩ to do${R}    " ;;      # read, still yours to do
-    done)    st="${GREEN}✓ done${R}     " ;;
-    idle)    st="${GREY}○ idle${R}     " ;;
-    *)       st="           " ;;   # no Claude Code session in this window
+    # Finished since you last looked (why it needs you, if it does: search).
+    review|followup) st="${YELLOW}◆ unread${R}   " ;;
+    # You have looked, and Claude is waiting on your answer or decision.
+    todo)    st="${MAGENTA}↩ to do${R}    " ;;
+    # Nothing needed (done, idle), or no Claude Code in this window.
+    *)       st="           " ;;
   esac
 }
 
@@ -162,10 +162,11 @@ EOF
       # Needs you, unseen results, follow-ups, then the rest by most recently
       # updated, then windows without Claude Code.
       case "$disp" in
-        needs) tier=0 ;; review|followup) tier=1 ;; todo) tier=2 ;; '') tier=4 ;; *) tier=3 ;;
+        needs) tier=0 ;; review|followup) tier=1 ;; todo) tier=2 ;; working) tier=3 ;;
+        '') tier=5 ;; *) tier=4 ;;
       esac
       key=$((9999999999 - updated))
-      [ "$tier" = 4 ] && key=0
+      [ "$tier" = 5 ] && key=0
     fi
     # Windows a schedule opened are listed under SCHEDULED, not here.
     [ "$owned" = 1 ] && continue

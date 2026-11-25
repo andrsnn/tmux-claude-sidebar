@@ -21,19 +21,14 @@ From the top:
 - **One row per window**: its number, name, Claude Code status, how long
   ago that status changed, and a `×` to close it. The orange bar marks the
   window you are in.
-- **Status**:
-  - `! needs you` (bold yellow): a permission prompt or a question dialog.
-  - `◆ review` (yellow): Claude finished while you were not looking, and
-    the work is wrapped up (or the AI check has not answered yet).
-  - `↩ follow up` (bold magenta): Claude finished while you were not
-    looking, and the turn is not wrapped up: it asked something, offered
-    options, hit an error, or left steps undone.
-  - `↩ to do` (magenta): a follow-up you have already looked at. It stays in
-    the list until you reply or mark it wrapped up, but no longer counts as
-    unread.
-  - `● working` (blue), `✓ done` (green, wrapped up and seen), `○ idle` (grey).
-- **Why a window needs you** (`↩ asks whether to open a PR`) and your last
-  prompt are in search (`Ctrl-b F`), which keeps the list itself short.
+- **Status**, one of four, in this order:
+  - `! needs you` (bold yellow): Claude is stopped at a permission prompt or
+    a question.
+  - `◆ unread` (yellow): Claude finished since you last looked.
+  - `↩ to do` (magenta): you have looked, and Claude is waiting on your
+    answer or decision (see "Wrapped up, or come back to it?" below).
+  - `● working` (blue): Claude is busy.
+  - No label: nothing is needed from you (finished and read, or not started).
 - **↻ SCHEDULED**: your scheduled tasks, each with its next run, and under
   it the window it last ran in with that run's status (and why, if it needs
   you). Click a task to manage it, a run line to go to that window, or
@@ -46,27 +41,28 @@ From the top:
 ## Features
 
 - **Status per window**: `working` after you send a prompt, `needs you` when
-  Claude asks for permission or asks you a question, `review` when it
-  finishes while you are elsewhere, `done` once you have looked, `idle` when a
-  session has started but has no prompt yet (or you stopped it with Esc).
-  Windows without Claude Code show no status.
-- **Review until you look**: a turn that ends in a window you are not looking
-  at shows `◆ review` and turns its tab in the status bar yellow. Switching to
-  the window marks it `done`. "Looking" means it is the current window and the
+  Claude asks for permission or asks you a question, `unread` when it
+  finishes while you are elsewhere, then no label once you have looked (or
+  `to do` if it is waiting on you).
+- **Unread until you look**: a turn that ends in a window you are not looking
+  at shows `◆ unread` and turns its tab in the status bar yellow. Switching to
+  the window marks it read. "Looking" means it is the current window and the
   terminal has focus, so a turn that ends while you are in another app also
   waits for you.
 - **Wrapped up, or come back to it?** When a turn ends, a short background
   call to Claude (`claude -p --model haiku`, with your existing login) reads
-  your last prompt and Claude's final message and decides. A turn that needs
-  you shows `↩ follow up` until you look at it, then `↩ to do`, which stays
-  near the top until you send another prompt or right-click it and choose
-  "Mark as wrapped up". Before that call answers (a few seconds), a reply that ends with a
-  question already counts as a follow-up. It costs one small Haiku request per
+  your last prompt and Claude's final message and decides. Only a turn that
+  cannot go on without you counts: Claude needs an answer or decision, hit a
+  blocker or error, or left part of the request undone. An optional offer at
+  the end ("Want me to also open a PR?") does not. Once you have looked at
+  such a turn it shows `↩ to do` until you send another prompt or right-click
+  it and choose "Mark as wrapped up" ("Mark all to-dos done" clears them
+  all). It costs one small Haiku request per
   finished turn; turn it off from the right-click menu, or with
   `~/.tmux/sidebar/sidebar.sh judge off`. That call runs with hooks, tools,
   MCP servers and session saving switched off.
-- **Sorted by what needs you**: `needs you`, then unread (`review` and
-  `follow up`), then `to do`, then the rest by when they last changed, then
+- **Sorted by what needs you**: `needs you`, then `unread`, then `to do`,
+  then `working`, then the rest by when they last changed, then
   windows without Claude Code.
   Click `sort:` at the top to switch to window-number order (kept after tmux
   restarts). The numbers shown are always the tmux window numbers, so
@@ -266,7 +262,7 @@ closes the sidebars in a running tmux server. The plugins in `~/.tmux/plugins` a
   (`wrapped` or `followup`) and `@claude_note`. A verdict for a turn that a
   newer prompt has replaced is dropped.
 - tmux hooks (`session-window-changed`, `client-session-changed`,
-  `client-focus-in`, `client-attached`) turn `review` into `done` for the
+  `client-focus-in`, `client-attached`) mark as read (`review` becomes `done`) the
   window a focused client is showing.
 - `sched.py daemon` is started by the tmux config, once per tmux server (a
   lock file makes a second start exit), checks the schedules every 15

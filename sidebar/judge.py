@@ -8,8 +8,7 @@ Writes on the pane's window:
     @claude_verdict   "wrapped" or "followup"
     @claude_note      a few words saying why
 
-First a quick guess (the reply ends with a question), then a one-shot call to
-Claude Code itself (`claude -p --model haiku`, your existing login; hooks,
+A one-shot call to Claude Code itself (`claude -p --model haiku`, your existing login; hooks,
 tools, MCP servers and session saving are all off for that call), unless
 turned off with `sidebar.sh judge off`. Results for a turn that has since been
 followed by a new prompt are dropped. Always exits 0, silently.
@@ -26,14 +25,16 @@ MAX_CHARS = 6000
 TIMEOUT = 90
 SYSTEM = (
     "You triage finished Claude Code turns for a busy developer who runs many "
-    "sessions in parallel and cannot reread them all. Decide whether the work "
-    "in this turn is wrapped up, or whether the developer should come back to "
-    "it. Come back (FOLLOWUP) when Claude asked a question, offered options or "
-    "a choice, proposed a plan awaiting approval, hit an error or blocker it "
-    "could not get past, left requested steps undone, or says what to do next "
-    "and is waiting. WRAPPED when the request is done and nothing is pending "
-    "from the developer (a summary of finished work, passing tests, an answer "
-    "to a question). Reply with exactly one line, no other text: "
+    "sessions in parallel. A FOLLOWUP puts the session on the developer's "
+    "to-do list, so use it sparingly: only when the work cannot go on without "
+    "the developer. FOLLOWUP when Claude needs an answer or a decision to "
+    "continue (which of two approaches, missing information, approval of a "
+    "plan it is waiting on), hit an error or blocker it could not get past, "
+    "or left part of what was asked undone. WRAPPED when what was asked is "
+    "done or answered, even if Claude ends by offering optional extras or "
+    "next steps (\"Want me to also open a PR?\", \"I can add tests if you "
+    "like\", \"Let me know if...\"): an optional offer is not a follow-up. "
+    "When in doubt, WRAPPED. Reply with exactly one line, no other text: "
     "\"WRAPPED: <reason>\" or \"FOLLOWUP: <reason>\", the reason at most 8 "
     "words, specific (e.g. \"asks whether to open a PR\")."
 )
@@ -132,15 +133,6 @@ def last_reply_from_transcript(path):
     return text
 
 
-def quick_guess(reply):
-    """A question at the end of the reply means it is waiting for you."""
-    tail = reply.strip()[-300:]
-    last = [ln for ln in tail.splitlines() if ln.strip()][-1:] or [""]
-    if last[0].rstrip(" *_`)").endswith("?"):
-        return "followup", "ends with a question"
-    return None
-
-
 def ask_claude(prompt, reply):
     exe = shutil.which("claude")
     if not exe:
@@ -188,10 +180,8 @@ def main():
     if not reply.strip():
         return
     quiet = remember_report(pane, reply) == "nothing new"
-    guess = quick_guess(reply)
-    if guess:
-        write(pane, turn, *guess)
-        ring_if_scheduled(pane, turn)
+    # No quick guess from a trailing "?": most replies end by offering
+    # something optional, which is not a follow-up. Only the check decides.
     if tmux("show", "-gqv", "@claude_sidebar_judge") == "off":
         return
     prompt = tmux("display", "-p", "-t", pane, "#{@claude_prompt}")

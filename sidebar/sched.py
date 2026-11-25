@@ -804,9 +804,9 @@ def clip(text, width):
     return "".join(out)
 
 
-STATE_LABEL = {"needs": "! needs you", "review": "◆ review", "working": "● working",
-               "done": "✓ done", "idle": "○ idle", "followup": "↩ follow up",
-               "todo": "↩ to do"}
+STATE_LABEL = {"needs": "! needs you", "review": "◆ unread", "followup": "◆ unread",
+               "todo": "↩ to do", "working": "● working", "done": "✓ finished",
+               "idle": "✓ finished"}
 
 
 def run_status(win):
@@ -839,7 +839,7 @@ def ui(stdscr, args):
         pass
     colors = {}
     for i, (k, fg) in enumerate((("needs", curses.COLOR_YELLOW), ("review", curses.COLOR_YELLOW),
-                                 ("followup", curses.COLOR_MAGENTA), ("todo", curses.COLOR_MAGENTA),
+                                 ("followup", curses.COLOR_YELLOW), ("todo", curses.COLOR_MAGENTA),
                                  ("working", curses.COLOR_BLUE),
                                  ("done", curses.COLOR_GREEN), ("accent", 208 if curses.COLORS >= 256 else curses.COLOR_RED),
                                  ("cyan", curses.COLOR_CYAN), ("err", curses.COLOR_RED)), 1):

@@ -14,6 +14,7 @@ terminal resizes go through tmux exactly as they would from a terminal.
 import argparse
 import fcntl
 import json
+import re
 import os
 import pty
 import select
@@ -41,8 +42,8 @@ ENV.pop("TMUX_PANE", None)
 ENV.pop("CLAUDE_CODE_DISABLE_TERMINAL_TITLE", None)
 
 results = []
-LABELS = {"working": "● working", "needs": "! needs you", "review": "◆ review",
-          "done": "✓ done", "idle": "○ idle"}
+LABELS = {"working": "● working", "needs": "! needs you", "review": "◆ unread"}
+QUIET = ("done", "idle")      # nothing needed: no label at all
 
 
 def tmux(*a, check=True):
@@ -339,6 +340,12 @@ def run(c, work, codez):
     for state, label in LABELS.items():
         tmux("set", "-w", "-t", bg, "@claude_state", state)
         check("sidebar shows %r" % label, wait(lambda: row_of(sb, label) is not None, 2.5))
+    bgn = fmt(bg, "#{window_name}")[:8]
+    for state in QUIET:
+        tmux("set", "-w", "-t", bg, "@claude_state", state)
+        check("sidebar shows no label for %r (nothing needed)" % state,
+              wait(lambda: not any(x in (tmux("capture-pane", "-p", "-t", sb).splitlines()[row_of(sb, bgn)])
+                                   for x in ("◆", "●", "!", "↩", "✓", "○")), 2.5))
     tmux("set", "-uw", "-t", bg, "@claude_state")
     bg_name = fmt(bg, "#{window_name}")[:8]
     check("plain shell window shows no status",
@@ -527,16 +534,17 @@ def attention_checks(c, W, ec):
     run_hook(pa, "done")
     check("review: Stop in a background window -> review",
           wait(lambda: fmt(a, "#{@claude_state}") == "review", 2.5), fmt(a, "#{@claude_state}"))
-    check("review: sidebar shows ◆ review",
-          wait(lambda: any(" %s " % an in l and "◆ review" in l for l in sidebar_lines()), 3))
+    check("review: sidebar shows ◆ unread",
+          wait(lambda: any(" %s " % an in l and "◆ unread" in l for l in sidebar_lines()), 3))
     drawn = lambda w: fmt(w, "#{E:window-status-format}").lower()
     check("review: its tab is drawn yellow", "bg=#f9e2af" in drawn(a), drawn(a))
     check("review: a quiet window's tab is not yellow", "#f9e2af" not in drawn(ws[3]), drawn(ws[3]))
     tmux("select-window", "-t", a)
     check("review: switching to it marks it done",
           wait(lambda: fmt(a, "#{@claude_state}") == "done", 3), fmt(a, "#{@claude_state}"))
-    check("review: then the sidebar shows ✓ done",
-          wait(lambda: any(" %s " % an in l and "✓ done" in l for l in sidebar_lines()), 3))
+    check("review: then it is quiet (no label, still the age)",
+          wait(lambda: any(" %s " % an in l and "◆" not in l and "<1m ×" in l for l in sidebar_lines()), 3),
+          "\n".join(sidebar_lines()))
     check("rows: the age column lines up with the ×",
           all(l.rstrip().endswith("×") for l in sidebar_lines() if " %s " % an in l))
     tmux("select-window", "-t", cur)
@@ -765,8 +773,8 @@ def judge_checks(c, W):
 
     answer("FOLLOWUP: asks whether to open a PR\n")
     turn("Fixed the race and tests pass. Want me to open a PR?")
-    check("judge: a reply ending in a question is a follow-up at once",
-          wait(lambda: fmt(t, "#{@claude_verdict}") == "followup", 2), fmt(t, "#{@claude_verdict}"))
+    check("judge: the system prompt treats optional offers as wrapped up",
+          wait(lambda: os.path.exists(log), 3) and "optional offer is not a follow-up" in open(log).read())
     check("judge: Claude's verdict and reason are stored",
           wait(lambda: fmt(t, "#{@claude_note}") == "asks whether to open a PR", 5), fmt(t, "#{@claude_note}"))
     calls = open(log).read() if os.path.exists(log) else ""
@@ -778,26 +786,28 @@ def judge_checks(c, W):
           "fix the flaky login test" in calls and "Want me to open a PR?" in calls)
     tname = fmt(t, "#{window_name}")[:10]
     row = lambda: next((l for l in sidebar_lines() if tname in l and "×" in l), "")
-    check("judge: unread and not wrapped up -> 'follow up' (status only, no reason)",
-          wait(lambda: "↩ follow up" in row(), 3)
+    check("judge: unread and not wrapped up -> still just 'unread' (status only, no reason)",
+          wait(lambda: fmt(t, "#{@claude_verdict}") == "followup" and "◆ unread" in row(), 5)
           and not any("asks whether to open" in l for l in sidebar_lines()), "\n".join(sidebar_lines()))
     check("judge: an unread follow-up turns its tab yellow",
           "bg=#f9e2af" in fmt(t, "#{E:window-status-format}").lower())
     check("judge: the menu still offers 'Mark as reviewed' for it",
-          "=review=followup=" in tmux("show", "-pqv", "-t", sidebar_panes(cur)[0], "@sidebar_rows"),
+          wait(lambda: "=review=followup=" in tmux("show", "-pqv", "-t", sidebar_panes(cur)[0], "@sidebar_rows"), 3),
           tmux("show", "-pqv", "-t", sidebar_panes(cur)[0], "@sidebar_rows"))
     tmux("select-window", "-t", t)
     check("judge: once you have looked, it is 'to do' (read, not done)",
-          wait(lambda: "↩ to do" in row() and "follow up" not in row(), 3), "\n".join(sidebar_lines()))
+          wait(lambda: "↩ to do" in row() and "unread" not in row(), 3), "\n".join(sidebar_lines()))
     tmux("select-window", "-t", cur)
     other = [w for w in ws if w not in (t, cur)][-1]
     tmux("set", "-w", "-t", other, "@claude_state", "done")
     tmux("set", "-w", "-t", other, "@claude_updated", str(int(time.time()) + 5))
 
+    oname = fmt(other, "#{window_name}")[:10]
+
     def follow_first():
         lines = sidebar_lines()
         f = [i for i, l in enumerate(lines) if "↩ to do" in l]
-        d = [i for i, l in enumerate(lines) if "✓ done" in l and "×" in l]
+        d = [i for i, l in enumerate(lines) if oname in l and "×" in l]
         return f and d and f[0] < d[0]
     check("judge: a 'to do' sorts above done windows, even newer ones",
           wait(follow_first, 3), "\n".join(sidebar_lines()))
@@ -811,10 +821,9 @@ def judge_checks(c, W):
     c.send("\x1b[<2;6;%dm" % (y + 1))
     check("judge: menu offers 'Mark as wrapped up'", wait(lambda: b"Mark as wrapped up" in c.buf, 3))
     c.send("w")
-    check("judge: marking it wrapped up -> done",
-          wait(lambda: fmt(t, "#{@claude_verdict}") == "wrapped" and
-               any(" %s " % fmt(t, "#{window_name}")[:10] in l and "✓ done" in l
-                   for l in sidebar_lines()), 3), "\n".join(sidebar_lines()))
+    check("judge: marking it wrapped up -> quiet",
+          wait(lambda: fmt(t, "#{@claude_verdict}") == "wrapped" and "↩" not in row(), 3),
+          "\n".join(sidebar_lines()))
 
     answer("WRAPPED: tests pass, nothing pending\n")
     turn("All done: the flaky test is fixed and CI is green.")
@@ -838,14 +847,13 @@ def judge_checks(c, W):
           fmt(t, "#{@claude_verdict}") == "" and fmt(t, "#{@claude_state}") == "working",
           fmt(t, "#{@claude_verdict}|#{@claude_state}|#{@claude_note}|#{@claude_turn}|#{@claude_prompt}"))
 
-    # Turned off: only the quick guess, no call.
+    # Turned off: no call, no verdict (a trailing "?" alone is not a to-do).
     tmux("set", "-g", "@claude_sidebar_judge", "off")
     try:
         os.remove(log)
         turn("Which database should I use, Postgres or SQLite?")
-        check("judge: off -> still the quick guess",
-              wait(lambda: fmt(t, "#{@claude_verdict}") == "followup", 3))
         time.sleep(1.5)
+        check("judge: off -> no verdict", fmt(t, "#{@claude_verdict}") == "", fmt(t, "#{@claude_verdict}"))
         check("judge: off -> Claude is not called", not os.path.exists(log))
     finally:
         tmux("set", "-gu", "@claude_sidebar_judge")
@@ -960,7 +968,7 @@ def sched_checks(c, W):
         c.send("\x1b")
         time.sleep(0.5)
         check("sched: the sidebar lists both tasks with their next run",
-              wait(lambda: any("↻ PRs rebased" in l and ("17:30" in l or ":" in l) for l in lines()) and
+              wait(lambda: any(re.search(r"↻ PRs rebased\s+(\S.*)?(in \d+m|\d+:\d\d)", l) for l in lines()) and
                    any("↻ standup-notes" in l for l in lines()), 4), "\n".join(lines()))
 
         # Run now -> a new window of its own (stub Claude), listed under SCHEDULED.
@@ -1272,7 +1280,7 @@ def claude_checks(c, codez, close_via_x):
     tmux("send-keys", "-t", cp, "Enter")  # approve
     check("5. Claude finishes in a background window -> review",
           wait(lambda: fmt(cw, "#{@claude_state}") == "review", 90), fmt(cw, "#{@claude_state}"))
-    check("5. sidebar shows review", wait(lambda: row_of(sb, "◆ review") is not None, 3))
+    check("5. sidebar shows unread", wait(lambda: row_of(sb, "◆ unread") is not None, 3))
     check("claude: the tool really ran", os.path.exists(os.path.join(codez, "tcs-probe.txt")))
     pid = fmt(cw, "#{@claude_pid}")
     check("claude: hooks record Claude Code's own pid (it runs in the pane)",
@@ -1337,7 +1345,7 @@ def claude_checks(c, codez, close_via_x):
         sb2 = sidebar_panes(current_window())[0]
         check("sched live: shown under SCHEDULED with its status",
               wait(lambda: row_of(sb2, "↻ live check") is not None and
-                   any("ran" in l and "◆ review" in l for l in tmux("capture-pane", "-p", "-t", sb2).splitlines()), 4))
+                   any("ran" in l and "◆ unread" in l for l in tmux("capture-pane", "-p", "-t", sb2).splitlines()), 4))
         tmux("kill-window", "-t", sw)
     finally:
         if saved is None:

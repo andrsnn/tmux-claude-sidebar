@@ -220,6 +220,13 @@ reviewed() {
 
 # You have dealt with it: no longer "follow up" (and no longer "review").
 wrapped() {
+  if [ "$1" = all ]; then
+    tmux list-windows -a -F '#{window_id} #{@claude_verdict}' 2>/dev/null |
+      while read -r win verdict; do
+        [ "$verdict" = followup ] && wrapped "$win"
+      done
+    return 0
+  fi
   tmux set -w -t "$1" @claude_verdict wrapped \; set -w -t "$1" @claude_note "marked done by you"
   reviewed "$1"
 }
@@ -315,6 +322,7 @@ act() {
     reviewed) reviewed "$win" ;;
     reviewed-all) reviewed all ;;
     wrapped) wrapped "$win" ;;
+    wrapped-all) wrapped all ;;
     up|down|top) move "$win" "$what" ;;
     rename)
       tmux command-prompt -t "$client" -p "Rename window:" "rename-window -t $win -- '%%'" ;;
