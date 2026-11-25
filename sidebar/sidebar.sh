@@ -202,6 +202,16 @@ seen() {
       case "$flags" in *focused*) ;; *) continue ;; esac
       [ "$state" = review ] && tmux set -w -t "$win" @claude_state done
     done
+  wake
+  return 0
+}
+
+# Hidden sidebars nap; redraw the ones that can be seen now, right away.
+wake() {
+  for pid in $(tmux list-panes -a -F \
+      '#{?#{&&:#{@sidebar},#{&&:#{window_active},#{session_attached}}},#{pane_pid},}' 2>/dev/null); do
+    kill -USR1 "$pid" 2>/dev/null
+  done
   return 0
 }
 

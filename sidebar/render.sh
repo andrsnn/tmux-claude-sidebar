@@ -1,5 +1,8 @@
 #!/bin/bash
-# Draws the sidebar once a second. Runs inside the sidebar pane.
+# Draws the sidebar. Runs inside the sidebar pane. Only the sidebar you can
+# see redraws (once a second); the others nap until their window is shown
+# (sidebar.sh wakes them with SIGUSR1). The loop starts no helper processes
+# per row: with many windows, forks are what make tmux slow to answer clicks.
 # bash 3.2 compatible (macOS /bin/bash): no associative arrays.
 
 # A UTF-8 locale so ${#name} counts characters. Use one that exists here.
@@ -30,25 +33,38 @@ EL="${ESC}[K"
 printf '%s' "${ESC}[?25l"
 trap 'printf "%s" "${ESC}[?25h"' EXIT
 trap 'exit 0' HUP TERM INT
+trap 'woken=1' USR1
+NL='
+'
 
-# repeat CHAR N
-rep() { local s="" i=0; while [ $i -lt "$2" ]; do s="$s$1"; i=$((i + 1)); done; printf '%s' "$s"; }
+# The helpers below set a variable instead of printing, so calling them
+# needs no subshell.
+# pad_ N [CHAR] -> $P, N copies of CHAR (a space by default)
+pad_() { local n="$1"; [ "$n" -gt 0 ] || n=0; printf -v P '%*s' "$n" ''; [ -n "$2" ] && P=${P// /$2}; }
 
-# fit TEXT WIDTH -> TEXT truncated with an ellipsis and right-padded to WIDTH
-fit() {
+# fit_ TEXT WIDTH -> $F, TEXT cut with an ellipsis and padded to WIDTH
+fit_() {
   local t="$1" w="$2"
   if [ "${#t}" -gt "$w" ]; then t="${t:0:$((w - 1))}…"; fi
-  printf '%s%s' "$t" "$(rep ' ' $((w - ${#t})))"
+  pad_ $((w - ${#t})); F="$t$P"
 }
 
-# age SECONDS -> "<1m", "5m", "3h", "2d"
-age() {
+# age_ SECONDS -> $A, "<1m", "5m", "3h", "2d"
+age_() {
   local s="$1"
-  if [ "$s" -lt 60 ]; then printf '<1m'
-  elif [ "$s" -lt 3600 ]; then printf '%sm' $((s / 60))
-  elif [ "$s" -lt 86400 ]; then printf '%sh' $((s / 3600))
-  elif [ "$s" -lt 8640000 ]; then printf '%sd' $((s / 86400))
-  else printf '99d'; fi
+  if [ "$s" -lt 60 ]; then A='<1m'
+  elif [ "$s" -lt 3600 ]; then A="$((s / 60))m"
+  elif [ "$s" -lt 86400 ]; then A="$((s / 3600))h"
+  elif [ "$s" -lt 8640000 ]; then A="$((s / 86400))d"
+  else A='99d'; fi
+}
+
+# nap SECONDS: sleep, but wake early on SIGUSR1 (this window was shown).
+nap() {
+  woken=0
+  sleep "$1" &
+  wait $! 2>/dev/null
+  [ "$woken" = 1 ] && kill $! 2>/dev/null
 }
 
 # stlabel STATE -> $st, the 11-column status label.
@@ -93,13 +109,22 @@ WFMT='#{window_index}|#{window_id}|#{window_active}|#{@claude_state}|#{@claude_u
 last_map=""
 last_rows=""
 last_out=""
+start=$(date +%s)
+SECONDS=0
+last_stall=0
 while :; do
-  info=$(tmux display-message -p -t "$pane" "#{pane_width}|#{pane_height}|#{pane_in_mode}|#{session_id}|#{window_active}|#{@claude_sidebar_sort}|#{@claude_sidebar_stall}|#{@claude_sched_file}|#{session_name}" 2>/dev/null) || exit 0
-  IFS='|' read -r width height inmode sid onwin sortmode stall schedf sess <<EOF
+  info=$(tmux display-message -p -t "$pane" "#{pane_width}|#{pane_height}|#{pane_in_mode}|#{session_id}|#{window_active}|#{session_attached}|#{@claude_sidebar_sort}|#{@claude_sidebar_stall}|#{@claude_sched_file}|#{prefix}|#{session_name}" 2>/dev/null) || exit 0
+  IFS='|' read -r width height inmode sid onwin attached sortmode stall schedf prefix sess <<EOF
 $info
 EOF
   # A stray scroll or drag can put the sidebar in copy mode, which freezes it.
   [ "$inmode" = 1 ] && tmux send-keys -t "$pane" -X cancel 2>/dev/null
+  # Nobody can see this sidebar: nap (drawn once at start, so it is never
+  # blank when shown; showing its window wakes it).
+  if [ -n "$last_out" ] && { [ "$onwin" != 1 ] || [ "${attached:-0}" = 0 ]; }; then
+    nap 3
+    continue
+  fi
 
   [ -n "$width" ] || width=30
   [ -n "$height" ] || height=40
@@ -107,19 +132,16 @@ EOF
   inner=$((width - 1))           # never write the last column (avoids wrap)
   namew=$((inner - 22))          # " NN " + name + " " + status(11) + " " + age(3) + " ×"
   [ $namew -lt 4 ] && namew=4
-  now=$(date +%s)
-  prefix=$(tmux show-option -gv prefix 2>/dev/null)
+  now=$((start + SECONDS))
   case "$prefix" in C-*) prefix="Ctrl-${prefix#C-}" ;; '') prefix="Ctrl-b" ;; esac
   prefix_label=$prefix
-
-  # Is a client with focus showing this session? Then its current window is
-  # being looked at, and a "review" there becomes "done".
-  focused=0
-  tmux list-clients -F '#{session_id} #{client_flags}' 2>/dev/null |
-    grep -q "^$sid .*focused" && focused=1
+  # The stalled-Claude check reads screens: every 5 seconds is plenty.
+  stallnow=0
+  [ $((now - last_stall)) -ge 5 ] && stallnow=1 last_stall=$now
 
   # One line per window: sort key fields, then the window fields.
   rows=""
+  nwin=0
   while IFS='|' read -r idx wid active state updated pid cp hash hash_at verdict sched owned name; do
     [ -n "$wid" ] || continue
     case "$updated" in ''|*[!0-9]*) updated=0 ;; esac
@@ -132,11 +154,10 @@ EOF
         state=""
       fi
     fi
-    if [ "$state" = working ] && [ "$onwin" = 1 ] && [ -n "$cp" ]; then
+    if [ "$state" = working ] && [ "$stallnow" = 1 ] && [ -n "$cp" ]; then
       # A working Claude redraws its spinner every second. A screen that has
       # not changed for a while means it was interrupted with Esc (which runs
-      # no hook) and is waiting for you. Only the sidebar in the session's
-      # current window checks, to keep the cost down.
+      # no hook) and is waiting for you. Only the sidebar you can see checks.
       h=$(tmux capture-pane -p -t "$cp" 2>/dev/null | cksum | cut -d ' ' -f 1)
       if [ "$h" != "$hash" ] || [ -z "$hash_at" ]; then
         tmux set -w -t "$wid" @claude_hash "$h" \; set -w -t "$wid" @claude_hash_at "$now" 2>/dev/null
@@ -145,11 +166,7 @@ EOF
         state=idle updated=$hash_at
       fi
     fi
-    if [ "$state" = review ] && [ "$active" = 1 ] && [ "$focused" = 1 ]; then
-      tmux set -w -t "$wid" @claude_state done 2>/dev/null
-      state=done
-    fi
-    # A finished turn you have seen, that the judge says is not wrapped up.
+    # ("review" becomes "done" when you look: sidebar.sh seen, from tmux hooks.)
     # A finished turn the judge says is not wrapped up: "follow up" while
     # unread, "to do" once you have looked at it.
     disp=$state
@@ -172,34 +189,49 @@ EOF
     [ "$owned" = 1 ] && continue
     rows="$rows$tier|$key|$idx|$wid|$active|$state|$updated|$verdict|$disp|$sched|$name
 "
+    nwin=$((nwin + 1))
   done <<EOF
 $(tmux list-windows -t "$pane" -F "$WFMT" 2>/dev/null)
 EOF
-  sorted=$(printf '%s' "$rows" | sort -t '|' -k1,1n -k2,2n -k3,3n)
-  nwin=$(printf '%s' "$rows" | grep -c .)
+  if [ "$sortmode" = index ]; then
+    sorted=$rows                 # list-windows is already in index order
+  else
+    sorted=$(printf '%s' "$rows" | sort -t '|' -k1,1n -k2,2n -k3,3n)
+  fi
   # Scheduled tasks (sched.py keeps this file up to date):
   #   id|paused|next run|run window|last run|note|name
-  tasks=""
-  [ -n "$schedf" ] && [ -f "$schedf" ] && tasks=$(cat "$schedf" 2>/dev/null)
-  ntasks=$(printf '%s' "$tasks" | grep -c .)
-  nruns=$(printf '%s\n' "$tasks" | awk -F '|' '{ n += ($4 != "") + ($6 != "") } END { print n + 0 }')
+  tasks="" ntasks=0 nruns=0
+  if [ -n "$schedf" ] && [ -f "$schedf" ]; then
+    while IFS= read -r tl; do
+      [ -n "$tl" ] || continue
+      tasks="$tasks$tl$NL"
+      ntasks=$((ntasks + 1))
+      IFS='|' read -r _ _ _ tw4 _ tn6 _ <<EOF
+$tl
+EOF
+      [ -n "$tw4" ] && nruns=$((nruns + 1))
+      [ -n "$tn6" ] && nruns=$((nruns + 1))
+    done < "$schedf"
+  fi
   nsched=$((2 + ntasks + nruns)); [ "$ntasks" = 0 ] && nsched=3
 
   out="${ESC}[H"
   row=0
   map=""
   rows_tbl=" "
-  line() { out="$out$1$EL
-"; row=$((row + 1)); }
+  # Rows past the bottom of the pane are dropped.
+  line() { [ "$row" -lt "$height" ] && out="$out$1$EL$NL"; row=$((row + 1)); }
 
   # "[−][+]" buttons at the right make the sidebar narrower or wider.
-  line " ${GREY}SESSION${R} ${BOLD}$(fit "$sess" $((inner - 15)))${R}${GREY}[${R}−${GREY}][${R}+${GREY}]${R}"
+  fit_ "$sess" $((inner - 15))
+  line " ${GREY}SESSION${R} ${BOLD}${F}${R}${GREY}[${R}−${GREY}][${R}+${GREY}]${R}"
   map="0=h:"
   # Sort order (click to switch) and the search button.
   if [ "$sortmode" = index ]; then label="window number"; else label="needs you first"; fi
   left=" sort: $label"
   pad=$((inner - 8 - ${#left})); [ $pad -lt 1 ] && pad=1
-  line " ${GREY}sort:${R} ${label}$(rep ' ' $pad)${GREY}[${R}search${GREY}]${R}"
+  pad_ $pad
+  line " ${GREY}sort:${R} ${label}${P}${GREY}[${R}search${GREY}]${R}"
   map="$map 1=b:"
   line ""
 
@@ -210,11 +242,11 @@ EOF
     [ -n "$wid" ] || continue
     name=${name//\\\$/\$}
     stlabel "$disp"
-    n=$(fit "$name" "$namew")
+    fit_ "$name" "$namew"; n=$F
     # How long ago its status last changed.
     a="   "
-    [ -n "$state" ] && [ "$updated" != 0 ] && a=$(printf '%3s' "$(age $((now - updated)))")
-    i=$(printf '%2s' "$idx")
+    if [ -n "$state" ] && [ "$updated" != 0 ]; then age_ $((now - updated)); printf -v a '%3s' "$A"; fi
+    printf -v i '%2s' "$idx"
     # The × in the last drawn column closes the window (see sidebar.sh click).
     if [ "$active" = 1 ]; then
       line "${ORANGE}▌${BOLD}${i} ${n}${R} ${st} ${GREY}${a} ×${R}"
@@ -233,15 +265,18 @@ EOF
   # SCHEDULED: each task, when it runs next, and how its last run went.
   line ""
   pad=$((inner - 19)); [ $pad -lt 1 ] && pad=1
-  line " ${CYAN}↻ SCHEDULED${R}$(rep ' ' $pad)${GREY}[${R}+ add${GREY}]${R}"
+  pad_ $pad
+  line " ${CYAN}↻ SCHEDULED${R}${P}${GREY}[${R}+ add${GREY}]${R}"
   [ "$row" -le "$height" ] && map="$map $((row - 1))=t:add"
   [ "$ntasks" = 0 ] && line "   ${GREY}none yet · ${prefix_label} T${R}"
   tw=$((inner - 14)); [ $tw -lt 4 ] && tw=4
   while IFS='|' read -r tid paused next twin last note tname; do
     [ -n "$tid" ] || continue
     tname=${tname//\\\$/\$}
-    if [ -n "$paused" ]; then nx="${GREY}$(printf '%9s' paused)${R}"; else nx="${GREY}$(printf '%9s' "$next")${R}"; fi
-    line " ${CYAN}↻${R} $(fit "$tname" $tw) ${nx}"
+    [ -n "$paused" ] && next=paused
+    printf -v nx '%9s' "$next"
+    fit_ "$tname" $tw
+    line " ${CYAN}↻${R} ${F} ${GREY}${nx}${R}"
     [ "$row" -le "$height" ] && map="$map $((row - 1))=s:$tid"
     if [ -n "$twin" ]; then
       info=$(tmux display -p -t "$twin" '#{window_index}|#{window_active}|#{session_id}|#{@claude_state}|#{@claude_verdict}|#{@claude_note}' 2>/dev/null)
@@ -253,17 +288,20 @@ EOF
         case "$rstate" in review) rstate=followup ;; done) rstate=todo ;; esac
       fi
       if [ -n "$rstate" ]; then stlabel "$rstate"; else st="${GREY}starting${R}   "; fi
-      case "$last" in ''|*[!0-9]*) ran="" ;; *) ran="ran $(age $((now - last))) ago" ;; esac
+      case "$last" in ''|*[!0-9]*) ran="" ;; *) age_ $((now - last)); ran="ran $A ago" ;; esac
       [ "$ran" = "ran <1m ago" ] && ran="ran just now"
       lead="   "; [ "$ract" = 1 ] && [ "$rsid" = "$sid" ] && lead="${ORANGE}▌${R}  "
       gap=$((inner - 3 - 3 - ${#ran} - 12)); [ $gap -lt 1 ] && gap=1
-      line "${lead}${GREY}$(printf '%2s' "$ridx") ${ran}${R}$(rep ' ' $gap)${st}"
+      printf -v ri '%2s' "$ridx"
+      pad_ $gap
+      line "${lead}${GREY}${ri} ${ran}${R}${P}${st}"
       [ "$row" -le "$height" ] && map="$map $((row - 1))=d:$twin"
       # Why it needs you, when it does.
       if [ -n "$rnote" ] && [ "$spare" -gt 0 ]; then
         case "$rstate" in review|followup|todo|needs)
           if [ "$rverdict" = followup ]; then mk="${MAGENTA}↩${GREY}"; else mk="${GREEN}✓${GREY}"; fi
-          line "      ${mk} ${GREY}$(fit "$rnote" $((inner - 9)))${R}"
+          fit_ "$rnote" $((inner - 9))
+          line "      ${mk} ${GREY}${F}${R}"
           [ "$row" -le "$height" ] && map="$map $((row - 1))=d:$twin"
           spare=$((spare - 1)) ;;
         esac
@@ -271,7 +309,8 @@ EOF
     fi
     # Missed, skipped, or why a run could not start.
     if [ -n "$note" ]; then
-      line "      ${GREY}$(fit "$note" $((inner - 7)))${R}"
+      fit_ "$note" $((inner - 7))
+      line "      ${GREY}${F}${R}"
       [ "$row" -le "$height" ] && map="$map $((row - 1))=s:$tid"
     fi
   done <<EOF
@@ -279,12 +318,15 @@ $tasks
 EOF
 
   line ""
-  line " ${GREY}$(rep '─' $((inner - 2)))${R}"
+  pad_ $((inner - 2)) '─'
+  line " ${GREY}${P}${R}"
   line ""
   line " ${GREY}KEYS · press${R} ${ORANGE}${prefix}${R} ${GREY}first${R}"
   line ""
   while IFS='|' read -r key desc act; do
-    line " ${ORANGE}$(fit "$key" 4)${R}$(fit "$desc" $((inner - 5)))"
+    fit_ "$key" 4; k4=$F
+    fit_ "$desc" $((inner - 5))
+    line " ${ORANGE}${k4}${R}${F}"
     [ -n "$act" ] && [ "$row" -le "$height" ] && map="$map $((row - 1))=k:$act"
   done <<EOF
 $KEYS
@@ -292,9 +334,9 @@ EOF
   line ""
   line " ${GREY}Right-click a window for more${R}"
 
-  # Drop rows that would run past the bottom of the pane, then clear the rest.
-  out=$(printf '%s' "$out" | head -n "$height")
-  # Only draw when something changed.
+  # No newline after the last row (it would scroll the pane), then clear the
+  # rest. Only draw when something changed.
+  out=${out%"$NL"}
   if [ "$out" != "$last_out" ]; then
     printf '%s%s' "$out" "${ESC}[J"
     last_out="$out"
@@ -307,5 +349,5 @@ EOF
          set-option -p -t "$pane" @sidebar_rows "$rows_tbl" 2>/dev/null
     last_map="$map" last_rows="$rows_tbl"
   fi
-  sleep 1
+  nap 1
 done

@@ -104,8 +104,11 @@ EOF
       tmux set -uw -t "$p" @claude_sched \; set -uw -t "$p" @claude_sched_run
     fi ;;
   working|needs)
-    set_common
-    set_state "$ev" ;;
+    # The busiest path (after every tool call): one tmux call. The state and
+    # its time only change when the state really changes.
+    tmux set -w -t "$p" @claude_pane "$p" \; set -w -t "$p" @claude_pid "$pid" \; \
+         if -F -t "$p" "#{!=:#{@claude_state},$ev}" \
+         "set -w -t $p @claude_state $ev ; set -w -t $p @claude_updated $now ; set -uw -t $p @claude_hash" ;;
   done|failed)
     input=$(cat)
     set_common

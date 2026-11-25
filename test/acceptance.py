@@ -199,7 +199,8 @@ def run(c, work, codez):
     check("first window gets a sidebar", w1)
     sb1 = sidebar_panes("work:1")[0]
     W = int(wait(lambda: tmux("show-options", "-gqv", "@claude_sidebar_width")))
-    check("sidebar has the configured width (%d)" % W, fmt(sb1, "#{pane_width}") == str(W))
+    check("sidebar has the configured width (%d)" % W,
+          wait(lambda: fmt(sb1, "#{pane_width}") == str(W), 4), fmt(sb1, "#{pane_width}"))
     if not os.path.exists(WIDTH_FILE):
         check("default width is 40", W == 40, str(W))
     check("sidebar is not the active pane", fmt("work:1", "#{@sidebar}") != "1")

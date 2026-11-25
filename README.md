@@ -237,8 +237,9 @@ closes the sidebars in a running tmux server. The plugins in `~/.tmux/plugins` a
 ## How it works
 
 - Each window gets a 40-column pane on the left, marked with the pane option
-  `@sidebar`. It runs `render.sh`, which reads `tmux list-windows` once a
-  second and redraws when something changed.
+  `@sidebar`. It runs `render.sh`. Only the sidebar you can see refreshes
+  (once a second, and only redraws when something changed); the others nap
+  and are woken when their window is shown, so 20+ windows stay cheap.
 - tmux hooks add the pane to new windows, keep it at the chosen width when the
   terminal resizes, move focus back to the main pane if you land on the
   sidebar, and close a window once only the sidebar is left in it.
