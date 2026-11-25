@@ -2,21 +2,33 @@
 
 A window list on the left of every tmux window, for running several Claude Code
 sessions side by side (one tmux window per git worktree). Each row shows what
-that session is doing, so you can see which one is waiting for you.
+that session is doing, so you can see which one is waiting for you: the ones
+that need you are at the top, a finished turn stays yellow until you have
+looked at it, and an AI check tells you whether the work is wrapped up or you
+should come back to it.
 
 ![The sidebar next to a Claude Code session. Four windows show done, needs you, done and idle, and window 2's tab in the status bar is yellow because its bell rang.](docs/screenshot.png)
 
 ## What the sidebar shows
 
-<img align="right" width="300" src="docs/sidebar.png" alt="Close-up of the sidebar: the session name with [−][+] buttons, four window rows with their status and an × each, and a list of tmux keys.">
+<img align="right" width="300" src="docs/sidebar.png" alt="Close-up of the sidebar. Sorted by what needs you: a window that needs you, two windows to review (one finished and wrapped up, one asking which channel to post in), one to follow up, one working, then done and idle windows. Each window that wants attention has a second line with how long ago and the reason or your last prompt.">
 
 From the top:
 
 - **Session name**, and `[−]` `[+]` to make the sidebar narrower or wider.
+- **Sort order** (click to switch) and `[search]`.
 - **One row per window**: its number, name, Claude Code status and a `×`
   to close it. The orange bar marks the window you are in.
-- **Status**: `● working` in blue, `! needs you` in yellow, `✓ done` in
-  green, `○ idle` in grey.
+- **Status**:
+  - `! needs you` (bold yellow): a permission prompt or a question dialog.
+  - `◆ review` (yellow): Claude finished while you were not looking.
+  - `↩ follow up` (magenta): you have seen it, but the turn is not wrapped up
+    (Claude asked something, offered options, hit an error, or left steps
+    undone).
+  - `● working` (blue), `✓ done` (green, wrapped up and seen), `○ idle` (grey).
+- **A second line** under windows that want attention: how long ago, and
+  either why it needs a follow-up (`↩ asks whether to open a PR`), what it
+  finished (`✓ tests pass, PR opened`), or your last prompt.
 - **Keys**: the tmux keys you use most. Click one, or press `Ctrl-b` and
   then the key.
 
@@ -25,9 +37,40 @@ From the top:
 ## Features
 
 - **Status per window**: `working` after you send a prompt, `needs you` when
-  Claude asks for permission or asks you a question, `done` when it finishes,
-  `idle` when a session has started but has no prompt yet. Windows without
-  Claude Code show no status.
+  Claude asks for permission or asks you a question, `review` when it
+  finishes while you are elsewhere, `done` once you have looked, `idle` when a
+  session has started but has no prompt yet (or you stopped it with Esc).
+  Windows without Claude Code show no status.
+- **Review until you look**: a turn that ends in a window you are not looking
+  at shows `◆ review` and turns its tab in the status bar yellow. Switching to
+  the window marks it `done`. "Looking" means it is the current window and the
+  terminal has focus, so a turn that ends while you are in another app also
+  waits for you.
+- **Wrapped up, or come back to it?** When a turn ends, a short background
+  call to Claude (`claude -p --model haiku`, with your existing login) reads
+  your last prompt and Claude's final message and decides. A turn that needs
+  you shows `↩ follow up` and stays near the top even after you have looked,
+  until you send another prompt or right-click it and choose "Mark as wrapped
+  up". Before that call answers (a few seconds), a reply that ends with a
+  question already counts as a follow-up. It costs one small Haiku request per
+  finished turn; turn it off from the right-click menu, or with
+  `~/.tmux/sidebar/sidebar.sh judge off`. That call runs with hooks, tools,
+  MCP servers and session saving switched off.
+- **Sorted by what needs you**: `needs you`, then `review`, then `follow up`,
+  then the rest by when they last changed, then windows without Claude Code.
+  Click `sort:` at the top to switch to window-number order (kept after tmux
+  restarts). The numbers shown are always the tmux window numbers, so
+  `Ctrl-b 3` still goes to window 3.
+- **Search every prompt** (`Ctrl-b F`, or click `[search]`): with nothing
+  typed it lists each Claude window once with your last prompt, needs-you
+  first. Type to search every prompt you have sent in every window, across
+  all tmux sessions (from each session's transcript, so older prompts and
+  resumed sessions are included). `Enter` goes to that window, `Tab` lists all
+  prompts, `Esc` closes.
+- **Right-click a window row** for a menu: switch to it, mark it reviewed or
+  wrapped up (or all reviewed), move it up, down or to the top (this changes
+  the tmux window numbers), rename or close it, and turn the AI check on or
+  off. Right-click elsewhere still shows tmux's own menu.
 - **Click a window row** to switch to it. **Click a key row** to do the same as
   typing `Ctrl-b` and that key. Clicking the sidebar never moves keyboard focus
   into it.
@@ -47,7 +90,16 @@ From the top:
 - A permission prompt in a background window rings the terminal bell, so its
   tab in the status bar turns yellow with a `!`.
 
-Every default tmux key still works. The only new key is `Ctrl-b S`.
+`Ctrl-b F` with nothing typed answers "what was I doing in each window?":
+
+![The search popup listing each Claude window once with its status, how long ago, and your last prompt, needs-you first. The chosen row's full prompt is shown at the bottom.](docs/search.png)
+
+Right-click on a window row:
+
+![The right-click menu for window 6: switch to it, mark as reviewed, mark as wrapped up, mark all as reviewed, move up, move down, move to the top, rename, close, and turn off the AI follow-up check.](docs/menu.png)
+
+Every default tmux key still works. The only new keys are `Ctrl-b S` and
+`Ctrl-b F`.
 
 Clicking `×` on the "PR 33067 review" row shows this prompt at the bottom.
 `y` closes the window, `n` keeps it:
@@ -74,7 +126,9 @@ Running `./install.sh` again is safe; it replaces what it installed before.
 
 - **Backups first**: `~/.tmux.conf` and `~/.claude/settings.json` are copied to
   `.bak-YYYYMMDD` (with a time added if that name is taken).
-- **`~/.tmux/sidebar/`**: the scripts.
+- **`~/.tmux/sidebar/`**: the scripts (`render.sh` draws the sidebar,
+  `sidebar.sh` handles clicks and tmux hooks, `hook.sh` records Claude Code's
+  state, `judge.py` is the wrapped-up check, `search.py` the search popup).
 - **`~/.tmux/plugins/`**: [tmux-sensible](https://github.com/tmux-plugins/tmux-sensible)
   v3.0.0 and [catppuccin/tmux](https://github.com/catppuccin/tmux) v2.3.2,
   cloned with git and checked out at a fixed commit (no TPM). The commits are
@@ -87,9 +141,9 @@ Running `./install.sh` again is safe; it replaces what it installed before.
   `automatic-rename-format`, and `set -as terminal-features ...extkeys`, which
   the block already covers) are commented out with a `# [tmux-claude-sidebar]`
   prefix, and install lists them.
-- **`~/.claude/settings.json`**: hooks that record each session's state on its
-  tmux window, merged next to your existing hooks. They do nothing outside
-  tmux and never fail. Also sets `preferredNotifChannel` to `terminal_bell`;
+- **`~/.claude/settings.json`**: hooks that run `~/.tmux/sidebar/hook.sh` to
+  record each session's state on its tmux window, merged next to your
+  existing hooks. They do nothing outside tmux and never fail. Also sets `preferredNotifChannel` to `terminal_bell`;
   your previous value is saved and put back by uninstall.
 
 If `settings.json` is not valid JSON, or `~/.tmux.conf` has a start marker
@@ -120,37 +174,62 @@ one.
 ```
 
 Removes the block, the hooks and the scripts, turns your disabled lines back
-on, restores your notification setting, and closes the sidebars in a running
-tmux server. The plugins in `~/.tmux/plugins` are left in place.
+on, restores your notification setting and tmux's own right-click menu, and
+closes the sidebars in a running tmux server. The plugins in `~/.tmux/plugins` are left in place.
 
 ## How it works
 
 - Each window gets a 36-column pane on the left, marked with the pane option
-  `@sidebar`. It runs `render.sh`, which redraws from `tmux list-windows` once
-  a second.
+  `@sidebar`. It runs `render.sh`, which reads `tmux list-windows` once a
+  second and redraws when something changed.
 - tmux hooks add the pane to new windows, keep it at the chosen width when the
   terminal resizes, move focus back to the main pane if you land on the
   sidebar, and close a window once only the sidebar is left in it.
-- Claude Code hooks set the window option `@claude_state`:
+- Claude Code hooks run `hook.sh`, which sets the window option
+  `@claude_state` (and keeps the last prompt, the transcript path and Claude
+  Code's process id on the window):
 
   | Claude Code event | state |
   |---|---|
-  | SessionStart | idle |
+  | SessionStart (startup, resume, clear) | idle |
   | UserPromptSubmit | working |
   | PermissionRequest, Notification (permission_prompt, elicitation_dialog) | needs |
   | PostToolUse, PostToolUseFailure, PermissionDenied | working |
-  | Stop, StopFailure | done |
+  | Stop | review, or done if you are looking at the window |
+  | StopFailure | the same, and always "follow up" |
   | SessionEnd | (cleared) |
+
+  SessionStart after an automatic compaction is ignored, since that can
+  happen in the middle of a turn.
+- After Stop, `judge.py` runs in the background and sets `@claude_verdict`
+  (`wrapped` or `followup`) and `@claude_note`. A verdict for a turn that a
+  newer prompt has replaced is dropped.
+- tmux hooks (`session-window-changed`, `client-session-changed`,
+  `client-focus-in`, `client-attached`) turn `review` into `done` for the
+  window a focused client is showing.
+- Two checks in `render.sh` keep the status honest when no hook runs:
+  - Esc fires no hook, so a `working` window whose screen has not changed for
+    20 seconds is shown `idle` (a working Claude redraws its spinner every
+    second, even while a long command runs).
+  - If Claude Code's process is gone (killed, crashed) without a SessionEnd
+    and its pane is back at a shell prompt, the status is cleared.
 
 ## Known limits
 
-- **Esc leaves "working" showing.** Claude Code runs no hook when you interrupt
-  it with Esc, so the window shows `working` until your next prompt.
+- **Esc shows "working" for up to 20 seconds.** Claude Code runs no hook when
+  you interrupt it with Esc; the sidebar notices once Claude's screen stops
+  changing. Only the sidebar of the window you are on does this check.
 - **"needs you" lasts until the tool finishes.** After you approve a long
   command, the row says `needs you` until the command ends.
 - **One status per window.** Two Claude sessions in one window share it.
 - **Long names are cut** to 17 characters at the default width. Widen the
   sidebar with `[+]` to see more.
+- **The AI check needs `claude` on the PATH** that Claude Code's hooks see.
+  Without it you still get the quick guess (a reply that ends with a
+  question is a follow-up).
+- **Prompt history comes from Claude Code's transcripts.** Search shows what
+  is in them; prompts from sessions started before you installed this
+  version are found once those sessions are restarted.
 - Shift+Enter also needs your terminal to send it as a distinct key (most do,
   including iTerm2, Ghostty, kitty and WezTerm).
 

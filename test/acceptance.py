@@ -13,6 +13,7 @@ terminal resizes go through tmux exactly as they would from a terminal.
 """
 import argparse
 import fcntl
+import json
 import os
 import pty
 import select
@@ -36,8 +37,12 @@ WIDTH_FILE = os.path.join(HOME, ".tmux", "claude-sidebar-width")
 ENV = dict(os.environ, HOME=HOME, TERM="xterm-256color")
 ENV.pop("TMUX", None)
 ENV.pop("TMUX_PANE", None)
+# Some hosted environments turn off the terminal title Claude Code sets.
+ENV.pop("CLAUDE_CODE_DISABLE_TERMINAL_TITLE", None)
 
 results = []
+LABELS = {"working": "● working", "needs": "! needs you", "review": "◆ review",
+          "done": "✓ done", "idle": "○ idle"}
 
 
 def tmux(*a, check=True):
@@ -74,6 +79,8 @@ def check(name, ok, detail=""):
         results.append(("no pane stuck in view-mode (seen at: %s)" % name, False))
         print("FAIL a pane is in view-mode (run-shell printed output): %s" % modes.split())
     results.append((name, bool(ok)))
+    if not isinstance(detail, str):
+        detail = repr(detail)
     print("%s %s%s" % ("PASS" if ok else "FAIL", name, (" - " + detail) if detail and not ok else ""))
 
 
@@ -166,7 +173,7 @@ def state_snapshot():
 
 def main():
     import faulthandler
-    faulthandler.dump_traceback_later(540, exit=True)  # a hang prints where it is
+    faulthandler.dump_traceback_later(900, exit=True)  # a hang prints where it is
     if not os.path.exists(os.path.join(HOME, ".tmux", "sidebar", "sidebar.sh")):
         sys.exit("not installed under %s (run install.sh first)" % HOME)
     tmux("kill-server", check=False)
@@ -291,8 +298,7 @@ def run(c, work, codez):
         shown = wait(lambda: b"stop everything running" in c.buf, 4)
         c.send(answer)
         return shown
-    tmux("new-window", "-d", "-t", "work:")
-    victim = tmux("list-windows", "-t", "work", "-F", "#{window_id}").split()[-1]
+    victim = tmux("new-window", "-d", "-P", "-F", "#{window_id}", "-t", "work:")
     wait(lambda: sidebar_panes(victim))
     check("x: clicking × asks before closing", close_via_x(victim, "n"))
     check("x: answering n keeps the window", victim in windows())
@@ -324,24 +330,21 @@ def run(c, work, codez):
         return subprocess.run(["sh", "-c", ec.hook_command(action)], env=e, input="{}",
                               text=True, capture_output=True).returncode
 
+    # The window is in the background, so Stop gives "review", not "done".
     for ev, m, action, state in ec.STATES:
-        if state is None:
-            continue
         rc = hook(action)
         check("hook %s%s -> %r" % (ev, " (%s)" % m if m else "", state),
               rc == 0 and wait(lambda: fmt(bg, "#{@claude_state}") == state, 2.5),
               fmt(bg, "#{@claude_state}"))
-    labels = {"working": "● working", "needs": "! needs you", "done": "✓ done", "idle": "○ idle"}
-    for state, label in labels.items():
-        hook(ec.tset(state))
+    for state, label in LABELS.items():
+        tmux("set", "-w", "-t", bg, "@claude_state", state)
         check("sidebar shows %r" % label, wait(lambda: row_of(sb, label) is not None, 2.5))
-    hook('tmux set -uw -t "$TMUX_PANE" @claude_state')
+    tmux("set", "-uw", "-t", bg, "@claude_state")
     bg_name = fmt(bg, "#{window_name}")[:8]
     check("plain shell window shows no status",
           wait(lambda: not any(l in (tmux("capture-pane", "-p", "-t", sb).splitlines()[row_of(sb, bg_name)])
-                               for l in labels.values()), 2.5))
-    hook('tmux set -uw -t "$TMUX_PANE" @claude_state')
-    r = subprocess.run(["sh", "-c", ec.hook_command(ec.tset("working"))],
+                               for l in LABELS.values()), 2.5))
+    r = subprocess.run(["sh", "-c", ec.hook_command("working")],
                        env={k: v for k, v in ENV.items() if k != "TMUX_PANE"}, capture_output=True)
     check("hooks are no-ops outside tmux and exit 0", r.returncode == 0)
 
@@ -381,6 +384,10 @@ def run(c, work, codez):
 
     modifier_drag_checks(c, W)
     width_checks(c, W)
+    attention_checks(c, W, ec)
+    menu_checks(c, W)
+    search_checks(c, W)
+    judge_checks(c, W)
 
     if args.claude:
         claude_checks(c, codez, close_via_x)
@@ -440,6 +447,403 @@ def width_checks(c, W):
                        env=dict(ENV, TMUX=fmt("work", "#{socket_path},#{pid},0")))
 
 
+def load_ec():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "ec", os.path.join(os.path.dirname(__file__), "..", "lib", "edit_configs.py"))
+    ec = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ec)
+    return ec
+
+
+def main_pane(w):
+    return tmux("list-panes", "-t", w, "-F", "#{?@sidebar,,#{pane_id}}").split()[0]
+
+
+def tmux_env(pane=None):
+    e = dict(ENV, TMUX=fmt("work", "#{socket_path},#{pid},0"))
+    if pane:
+        e["TMUX_PANE"] = pane
+    return e
+
+
+def run_hook(pane, event, payload=None, pid=None):
+    """Run a hook the way Claude Code does: the installed command, JSON on stdin.
+    With pid, call hook.sh directly with that as Claude Code's pid."""
+    if pid is None:
+        cmd = load_ec().hook_command(event)
+    else:
+        cmd = '"$HOME/.tmux/sidebar/hook.sh" %s %d' % (event, pid)
+    return subprocess.run(["sh", "-c", cmd], env=tmux_env(pane), input=json.dumps(payload or {}),
+                          text=True, capture_output=True).returncode
+
+
+def clear_states():
+    for w in windows():
+        for o in ("@claude_state", "@claude_pid", "@claude_updated", "@claude_prompt",
+                  "@claude_prompt_at", "@claude_transcript", "@claude_pane", "@claude_hash",
+                  "@claude_hash_at", "@claude_turn", "@claude_verdict", "@claude_note"):
+            tmux("set", "-uw", "-t", w, o, check=False)
+
+
+def sidebar_lines():
+    sb = sidebar_panes(current_window())[0]
+    return tmux("capture-pane", "-p", "-t", sb).splitlines()
+
+
+def name_rows(names):
+    """Row of each window name in the current sidebar (None if not shown)."""
+    lines = sidebar_lines()
+    return [next((i for i, l in enumerate(lines) if (" %s " % n) in l), None) for n in names]
+
+
+def attention_checks(c, W, ec):
+    """review / done, prompt lines, sort order, stale and stalled sessions."""
+    clear_states()
+    while len(windows()) < 5:
+        tmux("new-window", "-d", "-t", "work:")
+    ws = windows()
+    wait(lambda: all(sidebar_panes(w) for w in ws))
+    cur = ws[0]
+    tmux("select-window", "-t", cur)
+    names = ["alpha", "bravo", "charlie", "delta", "echo"]
+    for w, n in zip(ws, names):
+        tmux("rename-window", "-t", w, n)
+    a, b = ws[1], ws[2]
+    pa, pb, pc = main_pane(a), main_pane(b), main_pane(cur)
+    an = names[1]
+
+    # A finished background window: review (yellow) until you look at it.
+    run_hook(pa, "prompt", {"prompt": "tidy   the README\nand fix links;"})
+    check("review: prompt -> working", wait(lambda: fmt(a, "#{@claude_state}") == "working", 2.5),
+          fmt(a, "#{@claude_state}"))
+    check("review: prompt stored on one line", fmt(a, "#{@claude_prompt}") == "tidy the README and fix links; ",
+          repr(fmt(a, "#{@claude_prompt}")))
+    check("review: sidebar shows the prompt under a working window",
+          wait(lambda: any("tidy the README" in l for l in sidebar_lines()), 3), "\n".join(sidebar_lines()))
+    run_hook(pa, "done")
+    check("review: Stop in a background window -> review",
+          wait(lambda: fmt(a, "#{@claude_state}") == "review", 2.5), fmt(a, "#{@claude_state}"))
+    check("review: sidebar shows ◆ review",
+          wait(lambda: any(" %s " % an in l and "◆ review" in l for l in sidebar_lines()), 3))
+    drawn = lambda w: fmt(w, "#{E:window-status-format}").lower()
+    check("review: its tab is drawn yellow", "bg=#f9e2af" in drawn(a), drawn(a))
+    check("review: a quiet window's tab is not yellow", "#f9e2af" not in drawn(ws[3]), drawn(ws[3]))
+    tmux("select-window", "-t", a)
+    check("review: switching to it marks it done",
+          wait(lambda: fmt(a, "#{@claude_state}") == "done", 3), fmt(a, "#{@claude_state}"))
+    check("review: then the sidebar shows ✓ done",
+          wait(lambda: any(" %s " % an in l and "✓ done" in l for l in sidebar_lines()), 3))
+    check("review: no prompt line under a done window",
+          wait(lambda: not any("tidy the README" in l for l in sidebar_lines()), 3))
+    tmux("select-window", "-t", cur)
+
+    # Finishing in the window you are looking at is done straight away.
+    run_hook(pc, "prompt", {"prompt": "x"})
+    run_hook(pc, "done")
+    check("review: Stop in the window you are looking at -> done",
+          wait(lambda: fmt(cur, "#{@claude_state}") == "done", 2.5), fmt(cur, "#{@claude_state}"))
+    # ...unless the terminal has lost focus (you are in another app).
+    c.send("\x1b[O")
+    check("focus: tmux sees the terminal lose focus",
+          wait(lambda: "focused" not in tmux("list-clients", "-F", "#{client_flags}"), 2),
+          tmux("list-clients", "-F", "#{client_flags}"))
+    run_hook(pc, "prompt", {"prompt": "y"})
+    run_hook(pc, "done")
+    check("focus: Stop while the terminal is in the background -> review",
+          wait(lambda: fmt(cur, "#{@claude_state}") == "review", 2.5), fmt(cur, "#{@claude_state}"))
+    time.sleep(1.5)
+    check("focus: stays review while you are away", fmt(cur, "#{@claude_state}") == "review")
+    c.send("\x1b[I")
+    check("focus: coming back to the terminal marks it done",
+          wait(lambda: fmt(cur, "#{@claude_state}") == "done", 3), fmt(cur, "#{@claude_state}"))
+
+    # Order: needs you, then review, then the rest by most recently updated,
+    # then windows without Claude Code.
+    now = int(time.time())
+    for w, st, t in ((ws[1], "done", now - 50), (ws[2], "review", now - 3000),
+                     (ws[3], "needs", now - 9000), (ws[4], "idle", now - 10)):
+        tmux("set", "-w", "-t", w, "@claude_state", st)
+        tmux("set", "-w", "-t", w, "@claude_updated", str(t))
+    tmux("set", "-uw", "-t", cur, "@claude_state")
+    want = ["delta", "charlie", "echo", "bravo", "alpha"]
+    ok = wait(lambda: name_rows(want) == sorted(name_rows(want)) and None not in name_rows(want), 3)
+    check("sort: needs you, review, then most recent, then plain windows", ok,
+          "\n".join(sidebar_lines()))
+    sort_file = os.path.join(HOME, ".tmux", "claude-sidebar-sort")
+    saved = open(sort_file).read() if os.path.exists(sort_file) else None
+    c.click(3, 1)  # "sort: ..." row
+    by_index = ["alpha", "bravo", "charlie", "delta", "echo"]
+    check("sort: clicking 'sort' switches to window number order",
+          wait(lambda: None not in name_rows(by_index) and name_rows(by_index) == sorted(name_rows(by_index)), 3),
+          "\n".join(sidebar_lines()))
+    check("sort: the choice is saved", os.path.exists(sort_file) and open(sort_file).read().strip() == "index")
+    check("sort: the row says so", any("window number" in l for l in sidebar_lines()))
+    c.click(3, 1)
+    check("sort: clicking again goes back",
+          wait(lambda: name_rows(want) == sorted(name_rows(want)), 3) and
+          open(sort_file).read().strip() == "attention", "\n".join(sidebar_lines()))
+    if saved is None:
+        os.remove(sort_file)
+    else:
+        open(sort_file, "w").write(saved)
+    # The row number on screen is still the tmux window index.
+    lines = sidebar_lines()
+    check("sort: rows keep their window numbers",
+          " 4 delta" in lines[name_rows(["delta"])[0]], lines[name_rows(["delta"])[0]])
+    y = name_rows(["charlie"])[0]
+    c.click(8, y)
+    check("sort: clicking a sorted row switches to that window",
+          wait(lambda: current_window() == ws[2]), current_window())
+    tmux("select-window", "-t", cur)
+    clear_states()
+
+    # Claude Code killed (no SessionEnd): its status goes away.
+    victim = subprocess.Popen(["sleep", "300"])
+    run_hook(pb, "prompt", {"prompt": "z"}, pid=victim.pid)
+    check("stale: hook records Claude's pid", fmt(b, "#{@claude_pid}") == str(victim.pid))
+    time.sleep(1.5)
+    check("stale: kept while that process lives", fmt(b, "#{@claude_state}") == "working")
+    victim.kill()
+    victim.wait()
+    check("stale: cleared once it is gone and the pane is back at a shell",
+          wait(lambda: fmt(b, "#{@claude_state}") == "", 4), fmt(b, "#{@claude_state}"))
+
+    # Esc runs no hook: a "working" window whose screen stops changing is idle.
+    tmux("set", "-g", "@claude_sidebar_stall", "3")
+    try:
+        run_hook(pb, "prompt", {"prompt": "long job"})
+        check("stall: starts working", fmt(b, "#{@claude_state}") == "working")
+        tmux("send-keys", "-t", pb, "for i in 1 2 3 4 5 6; do echo tick $i; sleep 1; done", "Enter")
+        time.sleep(4.5)
+        check("stall: still working while the screen changes", fmt(b, "#{@claude_state}") == "working",
+              fmt(b, "#{@claude_state}"))
+        check("stall: idle once the screen has been still for a while",
+              wait(lambda: fmt(b, "#{@claude_state}") == "idle", 10), fmt(b, "#{@claude_state}"))
+    finally:
+        tmux("set", "-gu", "@claude_sidebar_stall")
+    clear_states()
+
+
+def menu_checks(c, W):
+    """Right-click menu on sidebar rows; tmux's own menu elsewhere."""
+    clear_states()
+    tmux("set", "-g", "@claude_sidebar_sort", "index")
+    try:
+        ws = windows()
+        cur = current_window()
+        target = [w for w in ws if w != cur][0]
+        name = fmt(target, "#{window_name}")
+        idx = int(fmt(target, "#{window_index}"))
+        y = wait(lambda: name_rows([name])[0])
+
+        def right_click(x, y):
+            c.buf = b""
+            c.send("\x1b[<2;%d;%dM" % (x + 1, y + 1))
+            c.send("\x1b[<2;%d;%dm" % (x + 1, y + 1))
+        right_click(5, y)
+        check("menu: right-click on a row opens its menu",
+              wait(lambda: b"Move down" in c.buf, 3), c.buf[-400:])
+        check("menu: does not switch windows", current_window() == cur)
+        c.send("d")
+        check("menu: Move down swaps it with the next window",
+              wait(lambda: fmt(target, "#{window_index}") == str(idx + 1), 3),
+              fmt(target, "#{window_index}"))
+        y = wait(lambda: name_rows([name])[0])
+        right_click(5, y)
+        wait(lambda: b"Move to the top" in c.buf, 3)
+        c.send("t")
+        base = int(tmux("show", "-gv", "base-index"))
+        check("menu: Move to the top makes it the first window",
+              wait(lambda: fmt(target, "#{window_index}") == str(base), 3), fmt(target, "#{window_index}"))
+        check("menu: no windows lost", sorted(windows()) == sorted(ws))
+        check("menu: current window unchanged", current_window() == cur)
+        tmux("set", "-w", "-t", target, "@claude_state", "review")
+        sbp = sidebar_panes(cur)[0]
+        wait(lambda: "=review=" in tmux("show", "-pqv", "-t", sbp, "@sidebar_rows"), 3)
+        y = wait(lambda: name_rows([name])[0])
+        right_click(5, y)
+        check("menu: offers 'Mark as reviewed' on a review window",
+              wait(lambda: b"Mark as reviewed" in c.buf, 3), c.buf[-400:])
+        c.send("r")
+        check("menu: marking reviewed -> done",
+              wait(lambda: fmt(target, "#{@claude_state}") == "done", 3), fmt(target, "#{@claude_state}"))
+        # Outside the sidebar the right-click menu is tmux's own.
+        right_click(W + 20, 8)
+        check("menu: right-click in a main pane still shows tmux's pane menu",
+              wait(lambda: b"Horizontal Split" in c.buf or b"Split" in c.buf, 3), c.buf[-400:])
+        c.send("\x1b")
+        time.sleep(0.3)
+        check("menu: that menu is not the sidebar's", b"Move down" not in c.buf)
+    finally:
+        tmux("set", "-gu", "@claude_sidebar_sort")
+        clear_states()
+
+
+def search_checks(c, W):
+    """prefix F / [search]: find a prompt in any window and jump to it."""
+    clear_states()
+    ws = windows()
+    cur = current_window()
+    target = [w for w in ws if w != cur][-1]
+    pt = main_pane(target)
+    tr = os.path.join(tempfile.mkdtemp(prefix="tcs-tr-"), "t.jsonl")
+    with open(tr, "w") as f:
+        for i, (kind, content) in enumerate([
+                ("user", "look at the flamingo logs and summarise errors"),
+                ("user", [{"type": "tool_result", "content": "flamingo tool output"}]),
+                ("user", "<command-name>/clear</command-name>"),
+                ("assistant", "flamingo answer from Claude"),
+                ("user", [{"type": "text", "text": "now plan the zebra migration"}])]):
+            f.write(json.dumps({"type": kind, "timestamp": "2026-01-0%dT10:00:00.000Z" % (i + 1),
+                                "message": {"role": kind, "content": content}}) + "\n")
+    run_hook(pt, "idle", {"transcript_path": tr})
+    run_hook(pt, "prompt", {"transcript_path": tr, "prompt": "now plan the zebra migration"})
+    check("search: transcript path recorded", fmt(target, "#{@claude_transcript}") == tr)
+    py = os.path.join(HOME, ".tmux", "sidebar", "search.py")
+    out = lambda *q: subprocess.run(["python3", "-I", py, "--list", *q], env=tmux_env(),
+                                    capture_output=True, text=True).stdout
+    hits = out("flamingo").splitlines()
+    check("search: finds an older prompt from the transcript",
+          len(hits) == 1 and hits[0].startswith(target + "\t") and "flamingo logs" in hits[0], hits)
+    check("search: skips tool results, commands and Claude's replies", len(hits) == 1, hits)
+    check("search: all words must match", out("zebra", "flamingo") == "" and out("zebra", "plan") != "")
+    name = fmt(target, "#{window_name}")
+    check("search: empty query lists each Claude window once",
+          [l.split("\t")[0] for l in out().splitlines()] == [target], out())
+
+    # The popup: type, Enter, and you are in that window.
+    c.buf = b""
+    c.prefix("F")
+    check("search: prefix F opens the popup", wait(lambda: b"Search:" in c.buf, 4), c.buf[-300:])
+    check("search: popup shows the window's last prompt", wait(lambda: b"zebra" in c.buf, 3))
+    c.send("flamin")
+    time.sleep(0.5)
+    c.send("\r")
+    check("search: Enter jumps to the matching window",
+          wait(lambda: current_window() == target, 4), current_window())
+    tmux("select-window", "-t", cur)
+    # [search] in the sidebar opens it too; Esc closes it without moving.
+    c.buf = b""
+    c.click(W - 5, 1)
+    check("search: [search] in the sidebar opens the popup", wait(lambda: b"Search:" in c.buf, 4),
+          c.buf[-300:])
+    c.send("\x1b")
+    time.sleep(0.8)
+    check("search: Esc closes it and stays put", current_window() == cur)
+    c.send("echo after-popup\r")
+    check("search: keys go to the pane again after the popup",
+          wait(lambda: "after-popup" in tmux("capture-pane", "-p", "-t", main_pane(cur))), 3)
+    clear_states()
+
+
+def judge_checks(c, W):
+    """After a turn: wrapped up, or come back to it (judge.py)."""
+    clear_states()
+    stub_dir = tempfile.mkdtemp(prefix="tcs-stub-")
+    log = os.path.join(stub_dir, "calls")
+    with open(os.path.join(stub_dir, "claude"), "w") as f:
+        f.write('#!/bin/sh\n{ echo "TMUX_PANE=${TMUX_PANE:-unset}"; printf "%%s\\n" "$@"; } >> %s\n'
+                'cat "%s/answer"\n' % (log, stub_dir))
+    os.chmod(os.path.join(stub_dir, "claude"), 0o755)
+    answer = lambda t: open(os.path.join(stub_dir, "answer"), "w").write(t)
+    env_path = stub_dir + os.pathsep + ENV["PATH"]
+    ws = windows()
+    cur = current_window()
+    t = [w for w in ws if w != cur][0]
+    pt = main_pane(t)
+
+    def turn(reply, prompt="fix the flaky login test"):
+        e = dict(tmux_env(pt), PATH=env_path)
+        for ev, payload in (("prompt", {"prompt": prompt}),
+                            ("done", {"last_assistant_message": reply})):
+            subprocess.run(["sh", "-c", load_ec().hook_command(ev)], env=e,
+                           input=json.dumps(payload), text=True, capture_output=True)
+
+    answer("FOLLOWUP: asks whether to open a PR\n")
+    turn("Fixed the race and tests pass. Want me to open a PR?")
+    check("judge: a reply ending in a question is a follow-up at once",
+          wait(lambda: fmt(t, "#{@claude_verdict}") == "followup", 2), fmt(t, "#{@claude_verdict}"))
+    check("judge: Claude's verdict and reason are stored",
+          wait(lambda: fmt(t, "#{@claude_note}") == "asks whether to open a PR", 5), fmt(t, "#{@claude_note}"))
+    calls = open(log).read() if os.path.exists(log) else ""
+    check("judge: asks haiku, with hooks, tools and session saving off",
+          all(x in calls for x in ("--model\nhaiku", "--no-session-persistence",
+                                   '{"disableAllHooks": true}', "--tools\n\n")), calls[:400])
+    check("judge: the call is not tracked as a session (no TMUX_PANE)", "TMUX_PANE=unset" in calls)
+    check("judge: the call sees the prompt and the reply",
+          "fix the flaky login test" in calls and "Want me to open a PR?" in calls)
+    check("judge: review row shows the reason",
+          wait(lambda: any("↩ asks whether to open" in l for l in sidebar_lines()), 3),
+          "\n".join(sidebar_lines()))
+    tmux("select-window", "-t", t)
+    check("judge: after you look, it is 'follow up', not 'done'",
+          wait(lambda: any("↩ follow up" in l for l in sidebar_lines()), 3), "\n".join(sidebar_lines()))
+    tmux("select-window", "-t", cur)
+    other = [w for w in ws if w not in (t, cur)][-1]
+    tmux("set", "-w", "-t", other, "@claude_state", "done")
+    tmux("set", "-w", "-t", other, "@claude_updated", str(int(time.time()) + 5))
+
+    def follow_first():
+        lines = sidebar_lines()
+        f = [i for i, l in enumerate(lines) if "↩ follow up" in l]
+        d = [i for i, l in enumerate(lines) if "✓ done" in l and "×" in l]
+        return f and d and f[0] < d[0]
+    check("judge: a follow-up sorts above done windows, even newer ones",
+          wait(follow_first, 3), "\n".join(sidebar_lines()))
+    check("judge: the tab is not yellow once seen",
+          "#f9e2af" not in fmt(t, "#{E:window-status-format}").lower())
+
+    # Right-click > Mark as wrapped up.
+    y = name_rows([fmt(t, "#{window_name}")])[0]
+    c.buf = b""
+    c.send("\x1b[<2;6;%dM" % (y + 1))
+    c.send("\x1b[<2;6;%dm" % (y + 1))
+    check("judge: menu offers 'Mark as wrapped up'", wait(lambda: b"Mark as wrapped up" in c.buf, 3))
+    c.send("w")
+    check("judge: marking it wrapped up -> done",
+          wait(lambda: fmt(t, "#{@claude_verdict}") == "wrapped" and
+               any(" %s " % fmt(t, "#{window_name}")[:10] in l and "✓ done" in l
+                   for l in sidebar_lines()), 3), "\n".join(sidebar_lines()))
+
+    answer("WRAPPED: tests pass, nothing pending\n")
+    turn("All done: the flaky test is fixed and CI is green.")
+    check("judge: a finished job is wrapped up",
+          wait(lambda: fmt(t, "#{@claude_verdict}") == "wrapped", 5) and
+          fmt(t, "#{@claude_note}") == "tests pass, nothing pending", fmt(t, "#{@claude_note}"))
+    check("judge: shown as ✓ reason under the review row",
+          wait(lambda: any("✓ tests pass" in l for l in sidebar_lines()), 3), "\n".join(sidebar_lines()))
+
+    # A new prompt clears the verdict; a late answer for the old turn is dropped.
+    answer("FOLLOWUP: late answer\n")
+    e = dict(tmux_env(pt), PATH=env_path)
+    subprocess.run(["sh", "-c", load_ec().hook_command("done")], env=e,
+                   input=json.dumps({"last_assistant_message": "ok"}), text=True)
+    subprocess.run(["sh", "-c", load_ec().hook_command("prompt")], env=e,
+                   input=json.dumps({"prompt": "next thing"}), text=True)
+    time.sleep(2)
+    check("judge: a new prompt clears the verdict, late answers are dropped",
+          fmt(t, "#{@claude_verdict}") == "" and fmt(t, "#{@claude_state}") == "working",
+          fmt(t, "#{@claude_verdict}|#{@claude_state}|#{@claude_note}|#{@claude_turn}|#{@claude_prompt}"))
+
+    # Turned off: only the quick guess, no call.
+    tmux("set", "-g", "@claude_sidebar_judge", "off")
+    try:
+        os.remove(log)
+        turn("Which database should I use, Postgres or SQLite?")
+        check("judge: off -> still the quick guess",
+              wait(lambda: fmt(t, "#{@claude_verdict}") == "followup", 3))
+        time.sleep(1.5)
+        check("judge: off -> Claude is not called", not os.path.exists(log))
+    finally:
+        tmux("set", "-gu", "@claude_sidebar_judge")
+    # StopFailure: an error is always a follow-up.
+    subprocess.run(["sh", "-c", load_ec().hook_command("failed")], env=e, input="{}", text=True)
+    check("judge: a turn that failed is a follow-up",
+          fmt(t, "#{@claude_verdict}") == "followup" and fmt(t, "#{@claude_note}") == "stopped with an error")
+    clear_states()
+
+
 def descendants(pid):
     out = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True).stdout
     kids = {}
@@ -462,15 +866,29 @@ def alive(pid):
         return False
 
 
+def accept_trust(pane):
+    """Answer Claude Code's workspace trust dialog with "Yes" (newer versions
+    highlight "No, exit" first)."""
+    scr = lambda: tmux("capture-pane", "-p", "-t", pane)
+    # Either the dialog, or Claude's prompt box ("? for shortcuts").
+    wait(lambda: "trust this folder" in scr().lower() or "for shortcuts" in scr(), 40)
+    if "trust this folder" not in scr().lower():
+        return
+    if any(l.strip().startswith("❯ No") for l in scr().splitlines()):
+        tmux("send-keys", "-t", pane, "Down")
+        time.sleep(0.3)
+    tmux("send-keys", "-t", pane, "Enter")
+
+
 def claude_checks(c, codez, close_via_x):
     # × on a window running Claude Code stops Claude and everything under it.
-    tmux("new-window", "-d", "-t", "work:", "-c", codez, "claude --model haiku")
-    xw = tmux("list-windows", "-t", "work", "-F", "#{window_id}").split()[-1]
-    xp = tmux("list-panes", "-t", xw, "-F", "#{?@sidebar,,#{pane_id}}").split()[0]
+    xw = tmux("new-window", "-d", "-P", "-F", "#{window_id}", "-t", "work:", "-c", codez,
+              "claude --model haiku")
+    wait(lambda: sidebar_panes(xw), 10)
+    time.sleep(1)
+    xp = main_pane(xw)
     scr = lambda: tmux("capture-pane", "-p", "-t", xp)
-    wait(lambda: "trust" in scr().lower() or "❯" in scr(), 30)
-    if "trust" in scr().lower():
-        tmux("send-keys", "-t", xp, "Enter")
+    accept_trust(xp)
     wait(lambda: fmt(xw, "#{@claude_state}") == "idle", 40)
     pids = descendants(int(fmt(xp, "#{pane_pid}")))
     print("   claude window processes before ×: %d" % len(pids))
@@ -481,17 +899,16 @@ def claude_checks(c, codez, close_via_x):
           str([p for p in pids if alive(p)]))
 
     # A Claude window in the background; the current window is a plain shell.
-    tmux("new-window", "-d", "-t", "work:", "-c", codez,
-         "claude --model haiku --permission-mode default")
-    cw = tmux("list-windows", "-t", "work", "-F", "#{window_id}").split()[-1]
-    cp = tmux("list-panes", "-t", cw, "-F", "#{?@sidebar,,#{pane_id}}").split()[0]
+    cw = tmux("new-window", "-d", "-P", "-F", "#{window_id}", "-t", "work:", "-c", codez,
+              "claude --model haiku --permission-mode default")
+    wait(lambda: sidebar_panes(cw), 10)
+    time.sleep(1)
+    cp = main_pane(cw)
     screen = lambda: tmux("capture-pane", "-p", "-t", cp)
     # Workspace trust dialog on first run in a new directory.
-    wait(lambda: "trust" in screen().lower() or "❯" in screen(), 30)
-    if "trust" in screen().lower():
-        tmux("send-keys", "-t", cp, "Enter")
+    accept_trust(cp)
     check("claude: SessionStart -> idle", wait(lambda: fmt(cw, "#{@claude_state}") == "idle", 30),
-          fmt(cw, "#{@claude_state}"))
+          fmt(cw, "#{@claude_state}") + "\n" + screen()[-1200:])
 
     # 7. Shift+Enter inserts a newline instead of submitting.
     time.sleep(2)
@@ -526,15 +943,56 @@ def claude_checks(c, codez, close_via_x):
     sb = sidebar_panes(current_window())[0]
     check("5. sidebar shows needs you", wait(lambda: row_of(sb, "needs you") is not None, 3))
     tmux("send-keys", "-t", cp, "Enter")  # approve
-    check("5. Claude finishes -> done", wait(lambda: fmt(cw, "#{@claude_state}") == "done", 90),
-          fmt(cw, "#{@claude_state}"))
-    check("5. sidebar shows done", wait(lambda: row_of(sb, "✓ done") is not None, 3))
+    check("5. Claude finishes in a background window -> review",
+          wait(lambda: fmt(cw, "#{@claude_state}") == "review", 90), fmt(cw, "#{@claude_state}"))
+    check("5. sidebar shows review", wait(lambda: row_of(sb, "◆ review") is not None, 3))
     check("claude: the tool really ran", os.path.exists(os.path.join(codez, "tcs-probe.txt")))
+    pid = fmt(cw, "#{@claude_pid}")
+    check("claude: hooks record Claude Code's own pid (it runs in the pane)",
+          pid.isdigit() and int(pid) in descendants(int(fmt(cp, "#{pane_pid}"))) and alive(int(pid)),
+          pid)
+    check("claude: last prompt recorded", "tcs-probe" in fmt(cw, "#{@claude_prompt}"),
+          fmt(cw, "#{@claude_prompt}"))
+    tr = fmt(cw, "#{@claude_transcript}")
+    check("claude: transcript recorded", tr.endswith(".jsonl") and os.path.exists(tr), tr)
+    py = os.path.join(HOME, ".tmux", "sidebar", "search.py")
+    hits = subprocess.run(["python3", "-I", py, "--list", "tcs-probe"], env=tmux_env(),
+                          capture_output=True, text=True).stdout
+    check("claude: search finds the prompt in the real transcript", hits.startswith(cw + "\t"), hits)
+    check("claude: the AI check gives a verdict",
+          wait(lambda: fmt(cw, "#{@claude_verdict}") in ("wrapped", "followup"), 90),
+          fmt(cw, "#{@claude_verdict}|#{@claude_note}"))
+    print("   verdict: %s (%s)" % (fmt(cw, "#{@claude_verdict}"), fmt(cw, "#{@claude_note}")))
+    tmux("select-window", "-t", cw)
+    check("5. looking at it -> done", wait(lambda: fmt(cw, "#{@claude_state}") == "done", 3),
+          fmt(cw, "#{@claude_state}"))
+
+    # Esc runs no hook; the sidebar notices the spinner has stopped.
+    tmux("set", "-g", "@claude_sidebar_stall", "6")
+    try:
+        tmux("send-keys", "-t", cp, "-l", "Write a 2000 word essay about the history of terminals. No tools.")
+        tmux("send-keys", "-t", cp, "Enter")
+        check("esc: prompt -> working", wait(lambda: fmt(cw, "#{@claude_state}") == "working", 30))
+        time.sleep(4)
+        tmux("send-keys", "-t", cp, "Escape")
+        time.sleep(3)
+        check("esc: still shown working right after Esc (no hook)", fmt(cw, "#{@claude_state}") == "working",
+              fmt(cw, "#{@claude_state}"))
+        check("esc: shown idle once Claude's screen is still",
+              wait(lambda: fmt(cw, "#{@claude_state}") == "idle", 25), fmt(cw, "#{@claude_state}"))
+    finally:
+        tmux("set", "-gu", "@claude_sidebar_stall")
+    tmux("select-window", "-t", windows()[0])
     name = fmt(cw, "#{window_name}")
     check("2b. Claude window named from its title (not dir, no glyph)",
           name and name != "churn" and name[0].isalnum(), name)
     print("   claude window name: %r" % name)
 
+    # After Esc, Claude puts the interrupted prompt back in its input box;
+    # Ctrl-D only exits from an empty one.
+    for _ in range(3):
+        tmux("send-keys", "-t", cp, "C-u")
+        time.sleep(0.3)
     tmux("send-keys", "-t", cp, "C-d")
     tmux("send-keys", "-t", cp, "C-d")
     check("2. exiting claude (its only process) closes the window",

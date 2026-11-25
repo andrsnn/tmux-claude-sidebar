@@ -41,10 +41,10 @@ done
 
 # 2. Scripts.
 mkdir -p "$SIDEBAR_DIR"
-for f in render.sh sidebar.sh sidebar.conf; do
+for f in render.sh sidebar.sh hook.sh search.py judge.py sidebar.conf menu.conf; do
   cp "$HERE/sidebar/$f" "$SIDEBAR_DIR/$f"
 done
-chmod 755 "$SIDEBAR_DIR/render.sh" "$SIDEBAR_DIR/sidebar.sh"
+chmod 755 "$SIDEBAR_DIR/render.sh" "$SIDEBAR_DIR/sidebar.sh" "$SIDEBAR_DIR/hook.sh"
 say "installed scripts in $SIDEBAR_DIR"
 
 # 3. Plugins, pinned.

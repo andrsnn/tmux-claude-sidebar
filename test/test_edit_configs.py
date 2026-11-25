@@ -94,6 +94,31 @@ class EditConfigs(unittest.TestCase):
         self.assertTrue(os.path.islink(self.conf))
         self.assertEqual(self.read(real), USER_CONF)
 
+    def test_hooks_call_hook_sh(self):
+        self.assertEqual(self.run_ec("install").returncode, 0)
+        hooks = json.loads(self.read(self.sett))["hooks"]
+        expect = {"SessionStart": "idle", "UserPromptSubmit": "prompt", "Stop": "done",
+                  "StopFailure": "failed", "SessionEnd": "end", "PermissionRequest": "needs",
+                  "PostToolUse": "working"}
+        for event, arg in expect.items():
+            cmd = hooks[event][0]["hooks"][0]["command"]
+            self.assertIn('"$HOME/.tmux/sidebar/hook.sh" %s "$PPID"' % arg, cmd)
+            self.assertTrue(cmd.startswith('[ -n "$TMUX_PANE" ]'), cmd)
+            self.assertIn("exit 0", cmd)
+        # Auto-compaction can run mid-turn: it must not reset the state.
+        self.assertEqual(hooks["SessionStart"][0]["matcher"], "startup|resume|clear")
+
+    def test_hook_is_silent_without_tmux(self):
+        self.assertEqual(self.run_ec("install").returncode, 0)
+        cmd = json.loads(self.read(self.sett))["hooks"]["Stop"][0]["hooks"][0]["command"]
+        env = {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_PANE")}
+        env["HOME"] = self.d   # no hook.sh here either
+        r = subprocess.run(["sh", "-c", cmd], input="{}", capture_output=True, text=True, env=env)
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+        env["TMUX_PANE"] = "%999"   # inside tmux, but hook.sh is missing
+        r = subprocess.run(["sh", "-c", cmd], input="{}", capture_output=True, text=True, env=env)
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+
     def test_crlf_file_gets_one_block(self):
         self.write(self.conf, USER_CONF.replace("\n", "\r\n"))
         self.run_ec("install")

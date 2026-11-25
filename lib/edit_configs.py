@@ -34,32 +34,39 @@ EXTKEYS_APPEND = re.compile(
     r"^\s*(set|set-option)\s+-[a-z]*a[a-z]*\s+terminal-features\s+\S*extkeys")
 
 
-def tset(state):
-    return 'tmux set -w -t "$TMUX_PANE" @claude_state %s' % state
+def hook_action(event):
+    # hook.sh records the state (and the prompt, transcript and Claude's pid)
+    # on the tmux window. $PPID is Claude Code, the parent of the hook's shell.
+    return '"$HOME/.tmux/sidebar/hook.sh" %s "$PPID"' % event
 
 
-# Known gap: interrupting Claude with Esc fires no hook (checked on 2.1.330:
-# not Stop, not Notification), so the window keeps showing "working" until
-# the next prompt.
+# Known gap: interrupting Claude with Esc fires no hook (checked on 2.1.331:
+# not Stop, not Notification). The sidebar notices instead: a working Claude
+# redraws its spinner every second, so a window that has been silent for a
+# while is shown idle (see render.sh).
 STATES = [
-    # (event, matcher or None, shell action, state the sidebar should show)
-    ("SessionStart", None, tset("idle"), "idle"),
-    ("UserPromptSubmit", None, tset("working"), "working"),
-    ("PermissionRequest", None, tset("needs"), "needs"),
-    ("Notification", "permission_prompt|elicitation_dialog", tset("needs"), "needs"),
+    # (event, matcher or None, hook.sh event, state the sidebar should show)
+    # "compact" is left out: auto-compaction can run in the middle of a turn.
+    ("SessionStart", "startup|resume|clear", "idle", "idle"),
+    ("UserPromptSubmit", None, "prompt", "working"),
+    ("PermissionRequest", None, "needs", "needs"),
+    ("Notification", "permission_prompt|elicitation_dialog", "needs", "needs"),
     # After a prompt is answered (or a tool is denied) the turn goes on.
-    ("PostToolUse", None, tset("working"), "working"),
-    ("PostToolUseFailure", None, tset("working"), "working"),
-    ("PermissionDenied", None, tset("working"), "working"),
-    ("Stop", None, tset("done"), "done"),
-    ("StopFailure", None, tset("done"), "done"),
-    ("SessionEnd", None, 'tmux set -uw -t "$TMUX_PANE" @claude_state', ""),
+    ("PostToolUse", None, "working", "working"),
+    ("PostToolUseFailure", None, "working", "working"),
+    ("PermissionDenied", None, "working", "working"),
+    # "review" until you look at the window, then "done".
+    ("Stop", None, "done", "review"),
+    ("StopFailure", None, "failed", "review"),
+    ("SessionEnd", None, "end", ""),
 ]
 
 
-def hook_command(action):
-    # Does nothing outside tmux and always exits 0. Stdin JSON is ignored.
-    return '[ -n "$TMUX_PANE" ] && { %s; } >/dev/null 2>&1; exit 0 %s' % (action, MARK)
+def hook_command(event):
+    # Does nothing outside tmux and always exits 0. A missing hook.sh (after
+    # uninstall.sh, before the settings are cleaned) is silently ignored.
+    return '[ -n "$TMUX_PANE" ] && { %s; } >/dev/null 2>&1; exit 0 %s' % (
+        hook_action(event), MARK)
 
 
 def read(path):
