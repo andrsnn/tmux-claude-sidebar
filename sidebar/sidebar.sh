@@ -20,6 +20,7 @@
 #   sidebar.sh save-right-click       keep tmux's own right-click elsewhere
 #   sidebar.sh wrapped <window>       mark a follow-up as wrapped up
 #   sidebar.sh judge on|off|toggle|load   the AI wrapped-up / follow-up check
+#   sidebar.sh sched <client> [add|<task id>]  the scheduled tasks popup
 # POSIX sh. Never fails loudly: hooks should not spam the status line.
 
 DIR=$(cd "$(dirname "$0")" && pwd)
@@ -142,8 +143,11 @@ click() {
         tmux select-window -t "$win"
       fi ;;
     d:*)
-      # The prompt line under a window row: switch to that window.
-      tmux select-window -t "${act#d:}" ;;
+      # The line under a window row, or a scheduled run: go to that window
+      # (it may be in another session).
+      tmux switch-client -c "$client" -t "${act#d:}" ;;
+    t:add) sched "$client" add ;;
+    s:*) sched "$client" "${act#s:}" ;;
     b:)
       # "sort: ..." on the left switches the order, "[search]" on the right.
       pw=$(tmux display-message -p -t "$pane" '#{pane_width}')
@@ -156,6 +160,7 @@ click() {
       fi ;;
     k:S) toggle "$(tmux display-message -p -t "$pane" '#{session_id}')" ;;
     k:F) search "$client" ;;
+    k:T) sched "$client" ;;
     k:?)
       # Same as typing Ctrl-b <key>: whatever the user has bound runs, so
       # rename, the kill-window confirm and choose-tree behave as when typed.
@@ -264,6 +269,20 @@ search() {
   return 0
 }
 
+# Scheduled tasks (sched.py): the popup, optionally adding one or showing one.
+sched() {
+  client="$1" what="$2"
+  dir=$(tmux display -p -c "$client" '#{pane_current_path}' 2>/dev/null)
+  extra=""
+  case "$what" in
+    add) extra="--add" ;;
+    t*) extra="--task '$what'" ;;
+  esac
+  tmux display-popup -c "$client" -E -w 90% -h 70% -T " Scheduled tasks " \
+    "python3 -I '$DIR/sched.py' ui --client '$client' --dir '$dir' $extra" 2>/dev/null
+  return 0
+}
+
 # Swap a window with its neighbour in index order, or move it to the front.
 move() {
   win="$1" where="$2"
@@ -348,6 +367,7 @@ case "$cmd" in
   save-right-click) save_right_click ;;
   wrapped) wrapped "$@" ;;
   judge) judge "${1:-toggle}" ;;
-  *) echo "usage: $0 ensure|ensure-session|ensure-all|toggle|click|guard|resize|cleanup|width|dragged|seen|sort|search|act|move|reviewed|save-right-click|wrapped|judge" >&2; exit 2 ;;
+  sched) sched "$@" ;;
+  *) echo "usage: $0 ensure|ensure-session|ensure-all|toggle|click|guard|resize|cleanup|width|dragged|seen|sort|search|act|move|reviewed|save-right-click|wrapped|judge|sched" >&2; exit 2 ;;
 esac
 exit 0

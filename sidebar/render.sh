@@ -23,6 +23,7 @@ YELLOW="${ESC}[33m"
 BYELLOW="${ESC}[1;33m"
 ORANGE="${ESC}[38;5;208m"
 MAGENTA="${ESC}[35m"
+CYAN="${ESC}[36m"
 EL="${ESC}[K"
 
 printf '%s' "${ESC}[?25l"
@@ -48,6 +49,19 @@ age() {
   else printf '%sd' $((s / 86400)); fi
 }
 
+# stlabel STATE -> $st, the 11-column status label.
+stlabel() {
+  case "$1" in
+    working) st="${BLUE}● working${R}  " ;;
+    needs)   st="${BYELLOW}! needs you${R}" ;;
+    review)  st="${YELLOW}◆ review${R}   " ;;
+    followup) st="${MAGENTA}↩ follow up${R}" ;;
+    done)    st="${GREEN}✓ done${R}     " ;;
+    idle)    st="${GREY}○ idle${R}     " ;;
+    *)       st="           " ;;   # no Claude Code session in this window
+  esac
+}
+
 # Shells: if Claude's pane is back at one of these, Claude Code has exited.
 is_shell() {
   case "${1#-}" in
@@ -65,19 +79,20 @@ c|new window|c
 ,|rename window|,
 &|close window|&
 F|search prompts|F
+T|scheduled tasks|T
 d|detach|d
 S|hide sidebar|S"
 
 # Fields are split on "|": tmux 3.4 prints control characters such as \037
 # as octal text, so they cannot be used. Free text always comes last.
-WFMT='#{window_index}|#{window_id}|#{window_active}|#{@claude_state}|#{@claude_updated}|#{@claude_pid}|#{@claude_pane}|#{@claude_hash}|#{@claude_hash_at}|#{@claude_verdict}|#{window_name}'
+WFMT='#{window_index}|#{window_id}|#{window_active}|#{@claude_state}|#{@claude_updated}|#{@claude_pid}|#{@claude_pane}|#{@claude_hash}|#{@claude_hash_at}|#{@claude_verdict}|#{@claude_sched}|#{@claude_sched_owned}|#{window_name}'
 
 last_map=""
 last_rows=""
 last_out=""
 while :; do
-  info=$(tmux display-message -p -t "$pane" "#{pane_width}|#{pane_height}|#{pane_in_mode}|#{session_id}|#{window_active}|#{@claude_sidebar_sort}|#{@claude_sidebar_stall}|#{session_name}" 2>/dev/null) || exit 0
-  IFS='|' read -r width height inmode sid onwin sortmode stall sess <<EOF
+  info=$(tmux display-message -p -t "$pane" "#{pane_width}|#{pane_height}|#{pane_in_mode}|#{session_id}|#{window_active}|#{@claude_sidebar_sort}|#{@claude_sidebar_stall}|#{@claude_sched_file}|#{session_name}" 2>/dev/null) || exit 0
+  IFS='|' read -r width height inmode sid onwin sortmode stall schedf sess <<EOF
 $info
 EOF
   # A stray scroll or drag can put the sidebar in copy mode, which freezes it.
@@ -90,6 +105,9 @@ EOF
   namew=$((inner - 18))          # " NN " + name + " " + 11-col status + " ×"
   [ $namew -lt 4 ] && namew=4
   now=$(date +%s)
+  prefix=$(tmux show-option -gv prefix 2>/dev/null)
+  case "$prefix" in C-*) prefix="Ctrl-${prefix#C-}" ;; '') prefix="Ctrl-b" ;; esac
+  prefix_label=$prefix
 
   # Is a client with focus showing this session? Then its current window is
   # being looked at, and a "review" there becomes "done".
@@ -99,7 +117,7 @@ EOF
 
   # One line per window: sort key fields, then the window fields.
   rows=""
-  while IFS='|' read -r idx wid active state updated pid cp hash hash_at verdict name; do
+  while IFS='|' read -r idx wid active state updated pid cp hash hash_at verdict sched owned name; do
     [ -n "$wid" ] || continue
     case "$updated" in ''|*[!0-9]*) updated=0 ;; esac
     if [ -n "$state" ] && [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
@@ -141,13 +159,22 @@ EOF
       key=$((9999999999 - updated))
       [ "$tier" = 4 ] && key=0
     fi
-    rows="$rows$tier|$key|$idx|$wid|$active|$state|$updated|$verdict|$name
+    # Windows a schedule opened are listed under SCHEDULED, not here.
+    [ "$owned" = 1 ] && continue
+    rows="$rows$tier|$key|$idx|$wid|$active|$state|$updated|$verdict|$sched|$name
 "
   done <<EOF
 $(tmux list-windows -t "$pane" -F "$WFMT" 2>/dev/null)
 EOF
   sorted=$(printf '%s' "$rows" | sort -t '|' -k1,1n -k2,2n -k3,3n)
   nwin=$(printf '%s' "$rows" | grep -c .)
+  # Scheduled tasks (sched.py keeps this file up to date):
+  #   id|paused|next run|run window|last run|note|name
+  tasks=""
+  [ -n "$schedf" ] && [ -f "$schedf" ] && tasks=$(cat "$schedf" 2>/dev/null)
+  ntasks=$(printf '%s' "$tasks" | grep -c .)
+  nruns=$(printf '%s\n' "$tasks" | awk -F '|' '{ n += ($4 != "") + ($6 != "") } END { print n + 0 }')
+  nsched=$((2 + ntasks + nruns)); [ "$ntasks" = 0 ] && nsched=3
 
   out="${ESC}[H"
   row=0
@@ -169,24 +196,19 @@ EOF
 
   # Rows left for prompt lines under windows that want attention, so the
   # window rows themselves always fit.
-  spare=$((height - 3 - nwin))
-  while IFS='|' read -r tier key idx wid active state updated verdict name; do
+  spare=$((height - 3 - nwin - nsched))
+  while IFS='|' read -r tier key idx wid active state updated verdict sched name; do
     [ -n "$wid" ] || continue
     name=${name//\\\$/\$}
-    case "$state" in
-      working) st="${BLUE}● working${R}  " ;;
-      needs)   st="${BYELLOW}! needs you${R}" ;;
-      review)  st="${YELLOW}◆ review${R}   " ;;
-      followup) st="${MAGENTA}↩ follow up${R}" ;;
-      done)    st="${GREEN}✓ done${R}     " ;;
-      idle)    st="${GREY}○ idle${R}     " ;;
-      *)       st="           " ;;   # no Claude Code session in this window
-    esac
+    stlabel "$state"
     n=$(fit "$name" "$namew")
     i=$(printf '%2s' "$idx")
     # The × in the last drawn column closes the window (see sidebar.sh click).
     if [ "$active" = 1 ]; then
       line "${ORANGE}▌${BOLD}${i} ${n}${R} ${st} ${GREY}×${R}"
+    elif [ -n "$sched" ]; then
+      # A schedule sent its prompt to this window of yours.
+      line "${CYAN}↻${R}${GREY}${i}${R} ${n} ${st} ${GREY}×${R}"
     else
       line " ${GREY}${i}${R} ${n} ${st} ${GREY}×${R}"
     fi
@@ -220,11 +242,55 @@ EOF
 $sorted
 EOF
 
+  # SCHEDULED: each task, when it runs next, and how its last run went.
+  line ""
+  pad=$((inner - 19)); [ $pad -lt 1 ] && pad=1
+  line " ${CYAN}↻ SCHEDULED${R}$(rep ' ' $pad)${GREY}[${R}+ add${GREY}]${R}"
+  [ "$row" -le "$height" ] && map="$map $((row - 1))=t:add"
+  [ "$ntasks" = 0 ] && line "   ${GREY}none yet · ${prefix_label} T${R}"
+  tw=$((inner - 14)); [ $tw -lt 4 ] && tw=4
+  while IFS='|' read -r tid paused next twin last note tname; do
+    [ -n "$tid" ] || continue
+    tname=${tname//\\\$/\$}
+    if [ -n "$paused" ]; then nx="${GREY}$(printf '%9s' paused)${R}"; else nx="${GREY}$(printf '%9s' "$next")${R}"; fi
+    line " ${CYAN}↻${R} $(fit "$tname" $tw) ${nx}"
+    [ "$row" -le "$height" ] && map="$map $((row - 1))=s:$tid"
+    if [ -n "$twin" ]; then
+      info=$(tmux display -p -t "$twin" '#{window_index}|#{window_active}|#{session_id}|#{@claude_state}|#{@claude_verdict}|#{@claude_note}' 2>/dev/null)
+      IFS='|' read -r ridx ract rsid rstate rverdict rnote <<EOF
+$info
+EOF
+      rnote=${rnote//\\\$/\$}
+      [ "$rstate" = done ] && [ "$rverdict" = followup ] && rstate=followup
+      if [ -n "$rstate" ]; then stlabel "$rstate"; else st="${GREY}starting${R}   "; fi
+      case "$last" in ''|*[!0-9]*) ran="" ;; *) ran="ran $(age $((now - last))) ago" ;; esac
+      [ "$ran" = "ran <1m ago" ] && ran="ran just now"
+      lead="   "; [ "$ract" = 1 ] && [ "$rsid" = "$sid" ] && lead="${ORANGE}▌${R}  "
+      gap=$((inner - 3 - 3 - ${#ran} - 12)); [ $gap -lt 1 ] && gap=1
+      line "${lead}${GREY}$(printf '%2s' "$ridx") ${ran}${R}$(rep ' ' $gap)${st}"
+      [ "$row" -le "$height" ] && map="$map $((row - 1))=d:$twin"
+      # Why it needs you, when it does.
+      if [ -n "$rnote" ] && [ "$spare" -gt 0 ]; then
+        case "$rstate" in review|followup|needs)
+          if [ "$rverdict" = followup ]; then mk="${MAGENTA}↩${GREY}"; else mk="${GREEN}✓${GREY}"; fi
+          line "      ${mk} ${GREY}$(fit "$rnote" $((inner - 9)))${R}"
+          [ "$row" -le "$height" ] && map="$map $((row - 1))=d:$twin"
+          spare=$((spare - 1)) ;;
+        esac
+      fi
+    fi
+    # Missed, skipped, or why a run could not start.
+    if [ -n "$note" ]; then
+      line "      ${GREY}$(fit "$note" $((inner - 7)))${R}"
+      [ "$row" -le "$height" ] && map="$map $((row - 1))=s:$tid"
+    fi
+  done <<EOF
+$tasks
+EOF
+
   line ""
   line " ${GREY}$(rep '─' $((inner - 2)))${R}"
   line ""
-  prefix=$(tmux show-option -gv prefix 2>/dev/null)
-  case "$prefix" in C-*) prefix="Ctrl-${prefix#C-}" ;; '') prefix="Ctrl-b" ;; esac
   line " ${GREY}KEYS · press${R} ${ORANGE}${prefix}${R} ${GREY}first${R}"
   line ""
   while IFS='|' read -r key desc act; do

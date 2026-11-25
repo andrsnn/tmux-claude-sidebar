@@ -173,7 +173,7 @@ def state_snapshot():
 
 def main():
     import faulthandler
-    faulthandler.dump_traceback_later(900, exit=True)  # a hang prints where it is
+    faulthandler.dump_traceback_later(1500, exit=True)  # a hang prints where it is
     if not os.path.exists(os.path.join(HOME, ".tmux", "sidebar", "sidebar.sh")):
         sys.exit("not installed under %s (run install.sh first)" % HOME)
     tmux("kill-server", check=False)
@@ -388,6 +388,7 @@ def run(c, work, codez):
     menu_checks(c, W)
     search_checks(c, W)
     judge_checks(c, W)
+    sched_checks(c, W)
 
     if args.claude:
         claude_checks(c, codez, close_via_x)
@@ -482,7 +483,8 @@ def clear_states():
     for w in windows():
         for o in ("@claude_state", "@claude_pid", "@claude_updated", "@claude_prompt",
                   "@claude_prompt_at", "@claude_transcript", "@claude_pane", "@claude_hash",
-                  "@claude_hash_at", "@claude_turn", "@claude_verdict", "@claude_note"):
+                  "@claude_hash_at", "@claude_turn", "@claude_verdict", "@claude_note",
+                  "@claude_sched", "@claude_sched_run", "@claude_sched_pending", "@claude_rang"):
             tmux("set", "-uw", "-t", w, o, check=False)
 
 
@@ -844,6 +846,287 @@ def judge_checks(c, W):
     clear_states()
 
 
+def load_sched():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "schedmod", os.path.join(HOME, ".tmux", "sidebar", "sched.py"))
+    m = importlib.util.module_from_spec(spec)
+    old = os.environ.get("HOME")
+    os.environ["HOME"] = HOME           # sched.py reads its files under HOME
+    try:
+        spec.loader.exec_module(m)
+    finally:
+        os.environ["HOME"] = old
+    return m
+
+
+def sched_checks(c, W):
+    """Scheduled tasks: the popup, runs, reuse, missed and skipped runs."""
+    clear_states()
+    sm = load_sched()
+    tasks_file = os.path.join(HOME, ".tmux", "claude-sidebar-schedules.json")
+    saved = open(tasks_file).read() if os.path.exists(tasks_file) else None
+    if saved is not None:
+        os.remove(tasks_file)
+    stub = tempfile.mkdtemp(prefix="tcs-sched-")
+    route = os.path.join(stub, "answer")
+    runs = os.path.join(stub, "runs")
+    with open(os.path.join(stub, "claude"), "w") as f:
+        # -p: a Haiku call (routing, schedule text, the judge). Otherwise a
+        # Claude Code session: log the prompt, draw an empty input box, wait.
+        f.write('#!/bin/sh\nif [ "$1" = "-p" ]; then cat %s; exit 0; fi\n'
+                'printf "%%s\\n" "$@" >> %s\nprintf "\\n\\342\\235\\257 "\nexec sleep 600\n'
+                % (route, runs))
+    os.chmod(os.path.join(stub, "claude"), 0o755)
+    answer = lambda t: open(route, "w").write(t)
+    answer("NEW\n")
+    env = dict(tmux_env(), PATH=stub + os.pathsep + ENV["PATH"])
+    py = os.path.join(HOME, ".tmux", "sidebar", "sched.py")
+    cli = lambda *a: subprocess.run(["python3", "-I", py, *a], env=env, capture_output=True, text=True)
+    import hashlib
+    key = hashlib.sha1(fmt("work", "#{socket_path}").encode()).hexdigest()[:10]
+    state_file, lock = sm.paths(key)["state"], sm.paths(key)["lock"]
+    tasks = lambda: json.load(open(tasks_file))["tasks"] if os.path.exists(tasks_file) else []
+    state = lambda: json.load(open(state_file)) if os.path.exists(state_file) else {}
+    lines = sidebar_lines
+    cur = current_window()
+    server_path = ""
+    try:
+        # The scheduler runs once per tmux server.
+        pid = int(open(lock).read().strip() or 0) if os.path.exists(lock) else 0
+        check("sched: the scheduler is running for this tmux server", pid > 0 and alive(pid), str(pid))
+        tmux("source-file", CONF)
+        time.sleep(1.5)
+        check("sched: reloading the config does not start a second one",
+              int(open(lock).read().strip() or 0) == pid and
+              alive(pid))
+        # From here on, passes are run by the test (with a stub Claude), so
+        # stop the scheduler; it is started again at the end.
+        cli("stop")
+        check("sched: stop", wait(lambda: not alive(pid), 3))
+        check("sched: empty section says how to add one",
+              wait(lambda: any("↻ SCHEDULED" in l for l in lines()) and
+                   any("none yet" in l for l in lines()), 3), "\n".join(lines()))
+
+        # Popups take the tmux server's environment: use the stub Claude there.
+        server_path = tmux("show-environment", "-g", "PATH").partition("=")[2]
+        tmux("set-environment", "-g", "PATH", env["PATH"])
+        # Add a task in the popup (prefix T, then a).
+        c.buf = b""
+        c.prefix("T")
+        check("sched: prefix T opens the scheduled tasks popup",
+              wait(lambda: b"Scheduled tasks" in c.buf, 4), c.buf[-300:])
+        c.send("a")
+        time.sleep(0.4)
+        for text in ("check my open PRs are rebased on main\r", "\x15PRs rebased\r",
+                     "weekdays 5:30pm\r", "\r", "y\r", "\r", "\r"):
+            c.send(text)
+            time.sleep(0.3)
+        check("sched: the popup shows how it read the schedule",
+              b"Runs weekdays 17:30" in c.buf, c.buf[-300:])
+        check("sched: the popup saved the task",
+              wait(lambda: [t.get("name") for t in tasks()] == ["PRs rebased"], 3), str(tasks()))
+        t1 = tasks()[0] if tasks() else {}
+        check("sched: with its prompt, schedule and the current folder",
+              t1.get("prompt") == "check my open PRs are rebased on main" and
+              t1.get("when") == "weekdays 5:30pm" and t1.get("reuse") == "auto" and
+              t1.get("dir") == fmt(main_pane(cur), "#{pane_current_path}"), str(t1))
+        # Plain words it cannot read go to Haiku, which answers with cron.
+        answer("15 8 * * 2\n")
+        c.send("a")
+        time.sleep(0.4)
+        for text in ("/standup-notes\r", "\r", "tuesdays at quarter past eight\r"):
+            c.send(text)
+            time.sleep(0.5)
+        check("sched: a schedule in plain words is translated",
+              wait(lambda: b"Understood" in c.buf, 4), c.buf[-300:])
+        for text in ("\r", "n\r", "\r", "\r"):
+            c.send(text)
+            time.sleep(0.3)
+        t2 = wait(lambda: len(tasks()) == 2 and tasks()[1], 3) or {}
+        check("sched: ... and saved as cron, new window, named from the skill",
+              t2.get("when") == "15 8 * * 2" and t2.get("reuse") == "new" and
+              t2.get("name") == "standup-notes", str(t2))
+        c.send("\x1b")
+        time.sleep(0.5)
+        check("sched: the sidebar lists both tasks with their next run",
+              wait(lambda: any("↻ PRs rebased" in l and ("17:30" in l or ":" in l) for l in lines()) and
+                   any("↻ standup-notes" in l for l in lines()), 4), "\n".join(lines()))
+
+        # Run now -> a new window of its own (stub Claude), listed under SCHEDULED.
+        answer("NEW\n")
+        r = cli("run", t2["id"])
+        check("sched: run now opens a new window", r.returncode == 0 and "new window" in r.stdout,
+              r.stdout + r.stderr)
+        rw = r.stdout.split()[0] if r.stdout else ""
+        check("sched: Claude Code started there with the prompt",
+              wait(lambda: os.path.exists(runs) and "/standup-notes" in open(runs).read(), 4))
+        check("sched: the window is marked as the task's",
+              fmt(rw, "#{@claude_sched}") == t2["id"] and fmt(rw, "#{@claude_sched_owned}") == "1")
+        check("sched: it is shown under SCHEDULED, not in your list",
+              wait(lambda: any(("%2s ran" % fmt(rw, "#{window_index}")) in l for l in lines()), 3) and
+              not any((" %s " % fmt(rw, "#{window_index}")) in l and "×" in l for l in lines()),
+              "\n".join(lines()))
+        check("sched: its tab is drawn like any other window", rw in windows())
+        y = next(i for i, l in enumerate(lines()) if ("%2s ran" % fmt(rw, "#{window_index}")) in l)
+        c.click(6, y)
+        check("sched: clicking the run line goes to that window", wait(lambda: current_window() == rw, 3))
+        tmux("select-window", "-t", cur)
+
+        # An always-new task starts fresh each run, replacing its finished
+        # previous window...
+        tmux("set", "-w", "-t", rw, "@claude_state", "done")
+        r = cli("run", t2["id"])
+        nw = r.stdout.split()[0] if r.stdout else ""
+        check("sched: an always-new task replaces its finished last run window",
+              r.returncode == 0 and nw and nw != rw and "replaced" in r.stdout and
+              wait(lambda: rw not in windows(), 3), r.stdout + r.stderr)
+        # ...but keeps one you have not read yet.
+        tmux("set", "-w", "-t", nw, "@claude_state", "review")
+        r = cli("run", t2["id"])
+        nw2 = r.stdout.split()[0] if r.stdout else ""
+        check("sched: ...but keeps it while it is unread",
+              r.returncode == 0 and nw2 not in ("", nw) and nw in windows(), r.stdout + r.stderr)
+        tmux("kill-window", "-t", nw)
+        rw = nw2
+        # ...but not while it is still working.
+        tmux("set", "-w", "-t", rw, "@claude_state", "working")
+        r = cli("run", t2["id"])
+        check("sched: a run is skipped while the last one is still working",
+              r.returncode != 0 and "still working" in r.stderr, r.stderr)
+        check("sched: and the sidebar says so",
+              wait(lambda: any("skipped" in l for l in lines()), 4), "\n".join(lines()))
+        tmux("set", "-w", "-t", rw, "@claude_state", "done")
+
+        # Reusing one of your windows: Haiku picks it, only if it is free.
+        mine = tmux("new-window", "-d", "-P", "-F", "#{window_id}", "-t", "work:",
+                    "printf '\\n\\342\\235\\257 '; exec cat")
+        wait(lambda: sidebar_panes(mine), 5)
+        time.sleep(1)
+        mp = main_pane(mine)
+        for o, v in (("@claude_state", "idle"), ("@claude_pane", mp), ("@claude_prompt", "deploy the api")):
+            tmux("set", "-w", "-t", mine, o, v)
+        answer("REUSE %s\n" % mine)
+        r = cli("run", t1["id"])
+        check("sched: Haiku can send a run to a free window of yours",
+              r.returncode == 0 and r.stdout.startswith(mine) and "Haiku" in r.stdout, r.stdout + r.stderr)
+        check("sched: the prompt arrives there",
+              wait(lambda: "rebased on main" in tmux("capture-pane", "-p", "-t", mp), 3))
+        check("sched: your window stays in your list, marked ↻",
+              wait(lambda: any(l.startswith("↻") and ("%2s" % fmt(mine, "#{window_index}")) in l
+                               for l in lines()), 3), "\n".join(lines()))
+        e = dict(tmux_env(mp), PATH=env["PATH"])
+        subprocess.run(["sh", "-c", load_ec().hook_command("prompt")], env=e,
+                       input=json.dumps({"prompt": "check my open PRs are rebased on main"}), text=True)
+        check("sched: the scheduled prompt itself keeps the mark", fmt(mine, "#{@claude_sched}") == t1["id"])
+        subprocess.run(["sh", "-c", load_ec().hook_command("prompt")], env=e,
+                       input=json.dumps({"prompt": "thanks, now do X"}), text=True)
+        check("sched: your own next prompt there clears it", fmt(mine, "#{@claude_sched}") == "")
+        # Its next run goes back to the same window, without asking Haiku.
+        tmux("set", "-w", "-t", mine, "@claude_state", "done")
+        tmux("respawn-pane", "-k", "-t", mp, "printf '\\n\\342\\235\\257 '; exec cat")
+        time.sleep(0.5)
+        answer("NEW\n")
+        r = cli("run", t1["id"])
+        check("sched: a reusing task goes back to its previous run window",
+              r.returncode == 0 and r.stdout.startswith(mine) and "previous run" in r.stdout,
+              r.stdout + r.stderr)
+        tmux("set", "-w", "-t", mine, "@claude_state", "idle")
+        # Never a window with text in its input box, or one being looked at.
+        tmux("set", "-w", "-t", mine, "@claude_state", "idle")
+        # A fresh, empty input box, then some text typed into it.
+        tmux("respawn-pane", "-k", "-t", mp, "printf '\\n\\342\\235\\257 '; exec cat")
+        time.sleep(0.5)
+        tmux("send-keys", "-t", mp, "-l", "half typed")
+        tmux("set", "-uw", "-t", mine, "@claude_sched")
+        st = state()
+        st.get(t1["id"], {}).pop("window", None)
+        json.dump(st, open(state_file, "w"))
+        r = cli("run", t1["id"])
+        check("sched: never a window with text in its input box",
+              r.returncode == 0 and not r.stdout.startswith(mine), r.stdout + r.stderr)
+        tmux("kill-window", "-t", r.stdout.split()[0])
+        tmux("send-keys", "-t", mp, "C-u")
+        tmux("select-window", "-t", mine)
+        r = cli("run", t1["id"])
+        check("sched: never the window you are looking at",
+              r.returncode == 0 and not r.stdout.startswith(mine), r.stdout + r.stderr)
+        tmux("kill-window", "-t", r.stdout.split()[0])
+        tmux("select-window", "-t", cur)
+        tmux("kill-window", "-t", mine)
+
+        # Due, missed, paused: what the daemon does each pass (run directly).
+        now = time.time()
+        three_h = time.localtime(now - 3 * 3600)
+        due = json.loads(cli("list").stdout)
+        due.append({"id": "tdue", "name": "due", "prompt": "due-run", "when": "*/5 * * * *",
+                    "dir": "~", "reuse": "new"})
+        due.append({"id": "tmiss", "name": "missed one", "prompt": "miss-run",
+                    "when": "%d %d * * *" % (three_h.tm_min, three_h.tm_hour), "dir": "~", "reuse": "new"})
+        due.append({"id": "tpause", "name": "paused one", "prompt": "pause-run", "when": "*/5 * * * *",
+                    "dir": "~", "reuse": "new", "paused": True})
+        json.dump({"tasks": due}, open(tasks_file, "w"))
+        st = state()
+        for tid in ("tdue", "tmiss", "tpause"):
+            st[tid] = {"last_slot": 0}
+        json.dump(st, open(state_file, "w"))
+        cli("tick")
+        log = open(runs).read()
+        check("sched: a task that is due runs", "due-run" in log, log)
+        check("sched: a run more than 2 hours late is skipped as missed",
+              "miss-run" not in log and state().get("tmiss", {}).get("note", "").startswith("missed"),
+              str(state().get("tmiss")))
+        check("sched: a paused task does not run", "pause-run" not in log)
+        n = log.count("due-run")
+        cli("tick")
+        check("sched: and runs once per slot", open(runs).read().count("due-run") == n)
+        check("sched: the sidebar shows missed and paused",
+              wait(lambda: any("missed" in l for l in lines()) and
+                   any("↻ paused one" in l and "paused" in l.split("one", 1)[1] for l in lines()), 4),
+              "\n".join(lines()))
+        cli("pause", "tdue")
+        check("sched: pause from the command line", any(t.get("paused") for t in tasks() if t["id"] == "tdue"))
+
+        # A scheduled run that needs a follow-up rings the bell (yellow "!" tab).
+        dw = state()["tdue"]["window"]
+        dp = main_pane(dw)
+        answer("FOLLOWUP: asks which branch to rebase\n")
+        e = dict(tmux_env(dp), PATH=env["PATH"])
+        for ev, payload in (("prompt", {"prompt": "due-run"}),
+                            ("done", {"last_assistant_message": "Rebased 3 of 4. Which branch for the last?"})):
+            subprocess.run(["sh", "-c", load_ec().hook_command(ev)], env=e, input=json.dumps(payload), text=True)
+        check("sched: a scheduled follow-up rings the bell",
+              wait(lambda: "!" in fmt(dw, "#{window_flags}"), 6), fmt(dw, "#{window_flags}"))
+        check("sched: ...and shows under its task with the reason",
+              wait(lambda: any("↩ asks which branch" in l for l in lines()), 4), "\n".join(lines()))
+
+        # Old run windows that are done, seen and not the latest get closed.
+        old = rw
+        st = state()
+        st[t2["id"]]["window"] = "@99999"
+        json.dump(st, open(state_file, "w"))
+        tmux("set", "-w", "-t", old, "@claude_state", "done")
+        tmux("set", "-uw", "-t", old, "@claude_verdict")
+        tmux("set", "-w", "-t", old, "@claude_updated", str(int(time.time()) - 2 * 86400))
+        cli("tick")
+        check("sched: an old, finished run window is closed", wait(lambda: old not in windows(), 3))
+
+        r = cli("delete", "tdue")
+        check("sched: delete", "tdue" not in [t["id"] for t in tasks()])
+    finally:
+        for w in windows():
+            if fmt(w, "#{@claude_sched_owned}") == "1":
+                tmux("kill-window", "-t", w, check=False)
+        if saved is None:
+            os.path.exists(tasks_file) and os.remove(tasks_file)
+        else:
+            open(tasks_file, "w").write(saved)
+        clear_states()
+        if server_path:
+            tmux("set-environment", "-g", "PATH", server_path)
+        tmux("source-file", CONF)          # starts the scheduler again
+
+
 def descendants(pid):
     out = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True).stdout
     kids = {}
@@ -987,6 +1270,36 @@ def claude_checks(c, codez, close_via_x):
     check("2b. Claude window named from its title (not dir, no glyph)",
           name and name != "churn" and name[0].isalnum(), name)
     print("   claude window name: %r" % name)
+
+    # A scheduled task, run by real Claude Code in a window of its own.
+    tasks_file = os.path.join(HOME, ".tmux", "claude-sidebar-schedules.json")
+    saved = open(tasks_file).read() if os.path.exists(tasks_file) else None
+    py = os.path.join(HOME, ".tmux", "sidebar", "sched.py")
+    cli = lambda *a: subprocess.run(["python3", "-I", py, *a], env=tmux_env(), capture_output=True, text=True)
+    try:
+        tid = cli("add", "--name", "live check", "--prompt", "Reply with just: scheduled-ok",
+                  "--when", "weekdays 5:30pm", "--dir", codez, "--reuse", "new").stdout.strip()
+        tmux("select-window", "-t", windows()[0])
+        r = cli("run", tid)
+        sw = r.stdout.split()[0] if r.stdout else ""
+        check("sched live: run now starts Claude Code in a new window", r.returncode == 0 and sw, r.stderr)
+        check("sched live: the run finishes, unread -> review",
+              wait(lambda: fmt(sw, "#{@claude_state}") == "review", 90), fmt(sw, "#{@claude_state}"))
+        check("sched live: Claude got the prompt", "scheduled-ok" in fmt(sw, "#{@claude_prompt}"))
+        check("sched live: the AI check gives a verdict",
+              wait(lambda: fmt(sw, "#{@claude_verdict}") in ("wrapped", "followup"), 90),
+              fmt(sw, "#{@claude_verdict}|#{@claude_note}"))
+        print("   scheduled run verdict: %s (%s)" % (fmt(sw, "#{@claude_verdict}"), fmt(sw, "#{@claude_note}")))
+        sb2 = sidebar_panes(current_window())[0]
+        check("sched live: shown under SCHEDULED with its status",
+              wait(lambda: row_of(sb2, "↻ live check") is not None and
+                   any("ran" in l and "◆ review" in l for l in tmux("capture-pane", "-p", "-t", sb2).splitlines()), 4))
+        tmux("kill-window", "-t", sw)
+    finally:
+        if saved is None:
+            os.path.exists(tasks_file) and os.remove(tasks_file)
+        else:
+            open(tasks_file, "w").write(saved)
 
     # After Esc, Claude puts the interrupted prompt back in its input box;
     # Ctrl-D only exits from an empty one.

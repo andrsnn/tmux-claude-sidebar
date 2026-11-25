@@ -19,6 +19,7 @@ python3 -I "$HERE/lib/edit_configs.py" uninstall "$TMUX_CONF" \
   "$HOME/.claude/settings.json" "$HOME/.tmux/claude-sidebar-state.json"
 
 if tmux list-sessions >/dev/null 2>&1; then
+  [ -f "$HOME/.tmux/sidebar/sched.py" ] && python3 -I "$HOME/.tmux/sidebar/sched.py" stop 2>/dev/null || true
   for h in window-linked session-created pane-exited after-kill-pane \
            window-resized client-resized after-select-pane \
            session-window-changed client-session-changed client-focus-in \
@@ -31,6 +32,7 @@ if tmux list-sessions >/dev/null 2>&1; then
   # own for these keys come back.
   tmux unbind-key S 2>/dev/null || true
   tmux unbind-key F 2>/dev/null || true
+  tmux unbind-key T 2>/dev/null || true
   # Right-click: the binding that was there before install.
   if [ -f "$HOME/.tmux/sidebar/right-click.conf" ]; then
     tmux source-file "$HOME/.tmux/sidebar/right-click.conf" 2>/dev/null || true
@@ -56,5 +58,8 @@ fi
 
 rm -rf "$HOME/.tmux/sidebar"
 rm -f "$HOME/.tmux/claude-sidebar-width" "$HOME/.tmux/claude-sidebar-sort" \
-      "$HOME/.tmux/claude-sidebar-judge"
+      "$HOME/.tmux/claude-sidebar-judge" "$HOME"/.tmux/claude-sidebar-sched-*
+# Your scheduled tasks are kept, in case you install again.
+[ -f "$HOME/.tmux/claude-sidebar-schedules.json" ] &&
+  echo "Kept your scheduled tasks in ~/.tmux/claude-sidebar-schedules.json."
 echo "Done. Restart Claude Code sessions to drop the hooks."

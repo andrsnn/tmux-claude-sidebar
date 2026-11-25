@@ -61,6 +61,22 @@ def write(pane, turn, verdict, note):
          % (pane, verdict, pane, quote(note)))
 
 
+def ring_if_scheduled(pane, turn):
+    """A scheduled run that needs a follow-up rings the bell, so its tab
+    flags it even if nobody is watching (once per turn)."""
+    info = tmux("display", "-p", "-t", pane,
+                "#{@claude_turn}|#{@claude_sched}|#{@claude_verdict}|#{@claude_rang}|#{pane_tty}")
+    t, sched, verdict, rang, tty = (info.split("|") + [""] * 5)[:5]
+    if t != turn or not sched or verdict != "followup" or rang == turn or not tty:
+        return
+    tmux("set", "-w", "-t", pane, "@claude_rang", turn)
+    try:
+        with open(tty, "w") as f:
+            f.write("\a")
+    except OSError:
+        pass
+
+
 def last_reply_from_transcript(path):
     """The text of the last assistant message, if the hook did not send it."""
     text = ""
@@ -144,12 +160,14 @@ def main():
     guess = quick_guess(reply)
     if guess:
         write(pane, turn, *guess)
+        ring_if_scheduled(pane, turn)
     if tmux("show", "-gqv", "@claude_sidebar_judge") == "off":
         return
     prompt = tmux("display", "-p", "-t", pane, "#{@claude_prompt}")
     verdict = ask_claude(prompt, reply)
     if verdict:
         write(pane, turn, *verdict)
+        ring_if_scheduled(pane, turn)
 
 
 if __name__ == "__main__":

@@ -5,13 +5,14 @@ sessions side by side (one tmux window per git worktree). Each row shows what
 that session is doing, so you can see which one is waiting for you: the ones
 that need you are at the top, a finished turn stays yellow until you have
 looked at it, and an AI check tells you whether the work is wrapped up or you
-should come back to it.
+should come back to it. Scheduled tasks run a prompt or skill for you on a
+cadence ("wrap up the day at 5:30", "are my PRs rebased?").
 
 ![The sidebar next to a Claude Code session. Four windows show done, needs you, done and idle, and window 2's tab in the status bar is yellow because its bell rang.](docs/screenshot.png)
 
 ## What the sidebar shows
 
-<img align="right" width="300" src="docs/sidebar.png" alt="Close-up of the sidebar. Sorted by what needs you: a window that needs you, two windows to review (one finished and wrapped up, one asking which channel to post in), one to follow up, one working, then done and idle windows. Each window that wants attention has a second line with how long ago and the reason or your last prompt.">
+<img align="right" width="300" src="docs/sidebar.png" alt="Close-up of the sidebar. Sorted by what needs you: a window that needs you, two windows to review (one finished and wrapped up, one asking which channel to post in), one to follow up, one working, then done and idle windows. Each window that wants attention has a second line with how long ago and the reason or your last prompt. Below, a SCHEDULED section with four tasks: wrap up the day (next 17:30, its last run in window 10 is unread and asks which tickets to close), PRs rebased? (next 9:00, last run reused window 2, which is marked with a circular arrow in the list above), prod check (paused) and standup notes (missed 9:00).">
 
 From the top:
 
@@ -29,6 +30,10 @@ From the top:
 - **A second line** under windows that want attention: how long ago, and
   either why it needs a follow-up (`↩ asks whether to open a PR`), what it
   finished (`✓ tests pass, PR opened`), or your last prompt.
+- **↻ SCHEDULED**: your scheduled tasks, each with its next run, and under
+  it the window it last ran in with that run's status (and why, if it needs
+  you). Click a task to manage it, a run line to go to that window, or
+  `[+ add]` to add one.
 - **Keys**: the tmux keys you use most. Click one, or press `Ctrl-b` and
   then the key.
 
@@ -67,6 +72,41 @@ From the top:
   all tmux sessions (from each session's transcript, so older prompts and
   resumed sessions are included). `Enter` goes to that window, `Tab` lists all
   prompts, `Esc` closes.
+- **Scheduled tasks** (`Ctrl-b T`, or `[+ add]`): run a prompt or a skill on
+  a schedule, like `/loop` but in your own tmux and repos. Examples:
+  "wrap up the day" at `weekdays 5:30pm` running `/wrap-up`; "PRs rebased?"
+  `every 2h 9am-6pm`; "prod check" `daily 9:30` with "check what I deployed
+  yesterday works in prod and tell me if I need to follow up". Schedules can
+  be written as `weekdays 5:30pm`, `every 30m`, `every 2h 9am-6pm`,
+  `mon,thu 9:00`, `daily 9:30`, `noon` or a cron line; anything else is
+  translated by Haiku and shown back to you. A task runs at most every 5
+  minutes.
+  - **Where a run goes**: the task's previous run window if it is free;
+    otherwise Haiku looks at your open Claude windows (name, folder, last
+    prompt, outcome) and reuses one only if it has the context the task needs
+    (for example the window that did the deploy you want checked); otherwise
+    a new window. A window is never used if it is working, needs you, has an
+    unread result or a follow-up, is the one you are looking at, or has text
+    typed in its input box. Set a task to "always new" for a fresh session
+    each run: it then replaces its previous run window once that one is
+    finished and read (and keeps it while it is unread or needs you).
+  - **What you see**: windows a schedule opened are listed under ↻ SCHEDULED
+    rather than with your own windows. A window of yours that a schedule
+    reused is marked `↻` until you send it your own next prompt. When a run
+    ends, the AI check says whether it is wrapped up; a run that needs a
+    follow-up rings the bell, so its tab turns yellow.
+  - **Unattended, but not unsupervised**: runs use your normal permission
+    mode, so a run that wants to do something that needs approval waits at
+    `! needs you`. You can set a model and permission mode per task.
+  - **Missed runs**: the scheduler runs inside tmux, so nothing runs while
+    tmux is not running or the computer sleeps. A run less than 2 hours late
+    starts when it can; an older one is skipped and shown as "missed". A run
+    that is due while the last one is still working is skipped.
+  - **Clean-up**: run windows that are done, have been looked at, are not a
+    task's latest run and have not changed for a day are closed.
+  - Tasks are kept in `~/.tmux/claude-sidebar-schedules.json` (uninstall
+    leaves this file). From a shell: `~/.tmux/sidebar/sched.py add|run|pause|
+    resume|delete|list|parse`.
 - **Right-click a window row** for a menu: switch to it, mark it reviewed or
   wrapped up (or all reviewed), move it up, down or to the top (this changes
   the tmux window numbers), rename or close it, and turn the AI check on or
@@ -94,12 +134,16 @@ From the top:
 
 ![The search popup listing each Claude window once with its status, how long ago, and your last prompt, needs-you first. The chosen row's full prompt is shown at the bottom.](docs/search.png)
 
+`Ctrl-b T` manages scheduled tasks:
+
+![The scheduled tasks popup: four tasks with their schedule in words, next run, last result and when it ran; the chosen task's prompt, settings and last outcome below; keys to add, edit, run now, pause and delete.](docs/scheduled.png)
+
 Right-click on a window row:
 
 ![The right-click menu for window 6: switch to it, mark as reviewed, mark as wrapped up, mark all as reviewed, move up, move down, move to the top, rename, close, and turn off the AI follow-up check.](docs/menu.png)
 
-Every default tmux key still works. The only new keys are `Ctrl-b S` and
-`Ctrl-b F`.
+Every default tmux key still works. The only new keys are `Ctrl-b S`,
+`Ctrl-b F` and `Ctrl-b T`.
 
 Clicking `×` on the "PR 33067 review" row shows this prompt at the bottom.
 `y` closes the window, `n` keeps it:
@@ -128,7 +172,8 @@ Running `./install.sh` again is safe; it replaces what it installed before.
   `.bak-YYYYMMDD` (with a time added if that name is taken).
 - **`~/.tmux/sidebar/`**: the scripts (`render.sh` draws the sidebar,
   `sidebar.sh` handles clicks and tmux hooks, `hook.sh` records Claude Code's
-  state, `judge.py` is the wrapped-up check, `search.py` the search popup).
+  state, `judge.py` is the wrapped-up check, `search.py` the search popup,
+  `sched.py` the scheduler).
 - **`~/.tmux/plugins/`**: [tmux-sensible](https://github.com/tmux-plugins/tmux-sensible)
   v3.0.0 and [catppuccin/tmux](https://github.com/catppuccin/tmux) v2.3.2,
   cloned with git and checked out at a fixed commit (no TPM). The commits are
@@ -207,6 +252,10 @@ closes the sidebars in a running tmux server. The plugins in `~/.tmux/plugins` a
 - tmux hooks (`session-window-changed`, `client-session-changed`,
   `client-focus-in`, `client-attached`) turn `review` into `done` for the
   window a focused client is showing.
+- `sched.py daemon` is started by the tmux config, once per tmux server (a
+  lock file makes a second start exit), checks the schedules every 15
+  seconds, and exits when the tmux server does. It writes a one-line-per-task
+  summary that `render.sh` reads for the ↻ SCHEDULED section.
 - Two checks in `render.sh` keep the status honest when no hook runs:
   - Esc fires no hook, so a `working` window whose screen has not changed for
     20 seconds is shown `idle` (a working Claude redraws its spinner every
@@ -227,6 +276,8 @@ closes the sidebars in a running tmux server. The plugins in `~/.tmux/plugins` a
 - **The AI check needs `claude` on the PATH** that Claude Code's hooks see.
   Without it you still get the quick guess (a reply that ends with a
   question is a follow-up).
+- **Schedules only run while tmux is running.** Use one tmux server; a
+  second server with the same home directory would run the tasks too.
 - **Prompt history comes from Claude Code's transcripts.** Search shows what
   is in them; prompts from sessions started before you installed this
   version are found once those sessions are restarted.
@@ -237,6 +288,7 @@ closes the sidebars in a running tmux server. The plugins in `~/.tmux/plugins` a
 
 ```sh
 python3 test/test_edit_configs.py          # config editing, in temp dirs
+python3 test/test_sched.py                 # schedule parsing
 python3 test/acceptance.py                 # tmux behaviour on a separate server
 python3 test/acceptance.py --claude        # plus live Claude Code checks (haiku)
 ```

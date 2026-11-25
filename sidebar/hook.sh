@@ -90,7 +90,15 @@ EOF
          set -w -t "$p" @claude_turn "$turn" \; set -uw -t "$p" @claude_verdict \; \
          set -uw -t "$p" @claude_note \; \
          set -w -t "$p" @claude_state working \; set -w -t "$p" @claude_updated "$now" \; \
-         set -uw -t "$p" @claude_hash ;;
+         set -uw -t "$p" @claude_hash
+    # Scheduled runs (sched.py): the prompt it typed into a window you own
+    # keeps the window marked; your own next prompt there clears the mark.
+    sch=$(tmux display -p -t "$p" '#{@claude_sched_pending}|#{@claude_sched_owned}')
+    if [ "${sch%%|*}" = 1 ]; then
+      tmux set -uw -t "$p" @claude_sched_pending
+    elif [ "${sch#*|}" != 1 ]; then
+      tmux set -uw -t "$p" @claude_sched \; set -uw -t "$p" @claude_sched_run
+    fi ;;
   working|needs)
     set_common
     set_state "$ev" ;;

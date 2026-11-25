@@ -41,7 +41,7 @@ done
 
 # 2. Scripts.
 mkdir -p "$SIDEBAR_DIR"
-for f in render.sh sidebar.sh hook.sh search.py judge.py sidebar.conf menu.conf; do
+for f in render.sh sidebar.sh hook.sh search.py judge.py sched.py sidebar.conf menu.conf; do
   cp "$HERE/sidebar/$f" "$SIDEBAR_DIR/$f"
 done
 chmod 755 "$SIDEBAR_DIR/render.sh" "$SIDEBAR_DIR/sidebar.sh" "$SIDEBAR_DIR/hook.sh"
@@ -74,6 +74,9 @@ python3 -I "$HERE/lib/edit_configs.py" install "$TMUX_CONF" "$SETTINGS" \
 # 5. Apply to a running tmux server, restarting sidebars on the new script.
 say ""
 if [ "$NO_RELOAD" = 0 ] && tmux list-sessions >/dev/null 2>&1; then
+  # Restart the scheduler on the new code (the config starts it again).
+  python3 -I "$SIDEBAR_DIR/sched.py" stop 2>/dev/null || true
+  sleep 1
   tmux source-file "$TMUX_CONF"
   tmux list-panes -a -F '#{?@sidebar,#{pane_id},}' | grep . |
     while read -r p; do tmux respawn-pane -k -t "$p"; done || true
