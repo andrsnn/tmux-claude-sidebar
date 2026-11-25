@@ -32,7 +32,7 @@ SORT_FILE="$HOME/.tmux/claude-sidebar-sort"
 JUDGE_FILE="$HOME/.tmux/claude-sidebar-judge"
 # tmux's own right-click binding, used outside the sidebar.
 RC_FILE="$DIR/right-click.conf"
-DEFAULT_WIDTH=36
+DEFAULT_WIDTH=40
 MIN_WIDTH=24
 MAX_WIDTH=80
 

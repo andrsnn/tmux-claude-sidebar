@@ -369,7 +369,8 @@ def main():
     if a and a[0] == "--list":
         now = time.time()
         for w, t, text in results(collect(), " ".join(a[1:])):
-            print("\t".join([w["id"], w["where"], w["state"], age(t, now), w["name"], text]))
+            print("\t".join([w["id"], w["where"], w["state"], age(t, now), w["name"], text,
+                             w.get("note", "")]))
         return
     client = a[0] if a else ""
     os.environ.setdefault("ESCDELAY", "25")

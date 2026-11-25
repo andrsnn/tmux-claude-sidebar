@@ -12,14 +12,15 @@ cadence ("wrap up the day at 5:30", "are my PRs rebased?").
 
 ## What the sidebar shows
 
-<img align="right" width="300" src="docs/sidebar.png" alt="Close-up of the sidebar. Sorted by what needs you: a window that needs you, two windows to review (one finished and wrapped up, one asking which channel to post in), one to follow up, one working, then done and idle windows. Each window that wants attention has a second line with how long ago and the reason or your last prompt. Below, a SCHEDULED section with four tasks: wrap up the day (next 17:30, its last run in window 10 is unread and asks which tickets to close), PRs rebased? (next 9:00, last run reused window 2, which is marked with a circular arrow in the list above), prod check (paused) and standup notes (missed 9:00).">
+<img align="right" width="300" src="docs/sidebar.png" alt="Close-up of the sidebar. Sorted by what needs you: a window that needs you, two windows to review (one finished and wrapped up, one asking which channel to post in), one to follow up, one working, then done and idle windows. Each row shows the window number, name, status and how long ago it changed. Below, a SCHEDULED section with four tasks: wrap up the day (next 17:30, its last run in window 10 is unread and asks which tickets to close), PRs rebased? (next 9:00, last run reused window 2, which is marked with a circular arrow in the list above), prod check (paused) and standup notes (missed 9:00).">
 
 From the top:
 
 - **Session name**, and `[−]` `[+]` to make the sidebar narrower or wider.
 - **Sort order** (click to switch) and `[search]`.
-- **One row per window**: its number, name, Claude Code status and a `×`
-  to close it. The orange bar marks the window you are in.
+- **One row per window**: its number, name, Claude Code status, how long
+  ago that status changed, and a `×` to close it. The orange bar marks the
+  window you are in.
 - **Status**:
   - `! needs you` (bold yellow): a permission prompt or a question dialog.
   - `◆ review` (yellow): Claude finished while you were not looking.
@@ -27,9 +28,8 @@ From the top:
     (Claude asked something, offered options, hit an error, or left steps
     undone).
   - `● working` (blue), `✓ done` (green, wrapped up and seen), `○ idle` (grey).
-- **A second line** under windows that want attention: how long ago, and
-  either why it needs a follow-up (`↩ asks whether to open a PR`), what it
-  finished (`✓ tests pass, PR opened`), or your last prompt.
+- **Why a window needs you** (`↩ asks whether to open a PR`) and your last
+  prompt are in search (`Ctrl-b F`), which keeps the list itself short.
 - **↻ SCHEDULED**: your scheduled tasks, each with its next run, and under
   it the window it last ran in with that run's status (and why, if it needs
   you). Click a task to manage it, a run line to go to that window, or
@@ -117,7 +117,7 @@ From the top:
 - **Click `×`** to close that window. tmux asks `(y/n)` first, then closes the
   window and stops everything running in it (Claude Code, the shell, and their
   child processes).
-- **Width**: 36 columns by default. Click `[−]` or `[+]` at the top of the
+- **Width**: 40 columns by default. Click `[−]` or `[+]` at the top of the
   sidebar to make it 2 columns narrower or wider, or drag its right border.
   The new width applies to every window and is kept after tmux restarts
   (it is saved in `~/.tmux/claude-sidebar-width`).
@@ -224,7 +224,7 @@ closes the sidebars in a running tmux server. The plugins in `~/.tmux/plugins` a
 
 ## How it works
 
-- Each window gets a 36-column pane on the left, marked with the pane option
+- Each window gets a 40-column pane on the left, marked with the pane option
   `@sidebar`. It runs `render.sh`, which reads `tmux list-windows` once a
   second and redraws when something changed.
 - tmux hooks add the pane to new windows, keep it at the chosen width when the

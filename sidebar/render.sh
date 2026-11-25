@@ -46,7 +46,8 @@ age() {
   if [ "$s" -lt 60 ]; then printf '<1m'
   elif [ "$s" -lt 3600 ]; then printf '%sm' $((s / 60))
   elif [ "$s" -lt 86400 ]; then printf '%sh' $((s / 3600))
-  else printf '%sd' $((s / 86400)); fi
+  elif [ "$s" -lt 8640000 ]; then printf '%sd' $((s / 86400))
+  else printf '99d'; fi
 }
 
 # stlabel STATE -> $st, the 11-column status label.
@@ -102,7 +103,7 @@ EOF
   [ -n "$height" ] || height=40
   case "$stall" in ''|*[!0-9]*) stall=20 ;; esac
   inner=$((width - 1))           # never write the last column (avoids wrap)
-  namew=$((inner - 18))          # " NN " + name + " " + 11-col status + " ×"
+  namew=$((inner - 22))          # " NN " + name + " " + status(11) + " " + age(3) + " ×"
   [ $namew -lt 4 ] && namew=4
   now=$(date +%s)
   prefix=$(tmux show-option -gv prefix 2>/dev/null)
@@ -194,49 +195,28 @@ EOF
   map="$map 1=b:"
   line ""
 
-  # Rows left for prompt lines under windows that want attention, so the
-  # window rows themselves always fit.
+  # Rows left for the reasons under scheduled runs, so the window and task
+  # rows themselves always fit.
   spare=$((height - 3 - nwin - nsched))
   while IFS='|' read -r tier key idx wid active state updated verdict sched name; do
     [ -n "$wid" ] || continue
     name=${name//\\\$/\$}
     stlabel "$state"
     n=$(fit "$name" "$namew")
+    # How long ago its status last changed.
+    a="   "
+    [ -n "$state" ] && [ "$updated" != 0 ] && a=$(printf '%3s' "$(age $((now - updated)))")
     i=$(printf '%2s' "$idx")
     # The × in the last drawn column closes the window (see sidebar.sh click).
     if [ "$active" = 1 ]; then
-      line "${ORANGE}▌${BOLD}${i} ${n}${R} ${st} ${GREY}×${R}"
+      line "${ORANGE}▌${BOLD}${i} ${n}${R} ${st} ${GREY}${a} ×${R}"
     elif [ -n "$sched" ]; then
       # A schedule sent its prompt to this window of yours.
-      line "${CYAN}↻${R}${GREY}${i}${R} ${n} ${st} ${GREY}×${R}"
+      line "${CYAN}↻${R}${GREY}${i}${R} ${n} ${st} ${GREY}${a} ×${R}"
     else
-      line " ${GREY}${i}${R} ${n} ${st} ${GREY}×${R}"
+      line " ${GREY}${i}${R} ${n} ${st} ${GREY}${a} ×${R}"
     fi
     [ "$row" -le "$height" ] && map="$map $((row - 1))=w:$wid" &&
-      rows_tbl="$rows_tbl$((row - 1))=$wid=$idx=$state=$verdict= "
-    # Under a window that wants attention: how long ago, and either the
-    # judge's note on a finished turn or your last prompt.
-    case "$state" in needs|review|working|followup) ;; *) continue ;; esac
-    [ "$spare" -gt 0 ] || continue
-    text=$(tmux display -p -t "$wid" '#{@claude_note}|#{@claude_prompt}' 2>/dev/null)
-    # tmux 3.4 prints "$" as "\$".
-    text=${text//\\\$/\$}
-    note=${text%%|*} prompt=${text#*|}
-    mark=""
-    case "$state" in
-      review|followup)
-        if [ -n "$note" ]; then
-          prompt=$note
-          if [ "$verdict" = followup ]; then mark="${MAGENTA}↩${GREY} "; else mark="${GREEN}✓${GREY} "; fi
-        fi ;;
-    esac
-    [ -n "$prompt" ] || continue
-    a=$(age $((now - updated)))
-    [ "$updated" = 0 ] && a=""
-    w=$((inner - 5 - ${#a})); [ -n "$mark" ] && w=$((w - 2))
-    line "    ${GREY}${a} ${mark}$(fit "$prompt" $w)${R}"
-    spare=$((spare - 1))
-    [ "$row" -le "$height" ] && map="$map $((row - 1))=d:$wid" &&
       rows_tbl="$rows_tbl$((row - 1))=$wid=$idx=$state=$verdict= "
   done <<EOF
 $sorted

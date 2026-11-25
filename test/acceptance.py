@@ -200,7 +200,7 @@ def run(c, work, codez):
     W = int(wait(lambda: tmux("show-options", "-gqv", "@claude_sidebar_width")))
     check("sidebar has the configured width (%d)" % W, fmt(sb1, "#{pane_width}") == str(W))
     if not os.path.exists(WIDTH_FILE):
-        check("default width is 36", W == 36, str(W))
+        check("default width is 40", W == 40, str(W))
     check("sidebar is not the active pane", fmt("work:1", "#{@sidebar}") != "1")
     check("window named from directory, codez- stripped",
           wait(lambda: fmt("work:1", "#{window_name}") == "churn"),
@@ -309,7 +309,7 @@ def run(c, work, codez):
     main = fmt(cur, "#{pane_id}")
     tmux("split-window", "-h", "-t", main)
     other = fmt(cur, "#{pane_id}")
-    c.click(40, 5)
+    c.click(W + 4, 5)  # just right of the sidebar
     check("5. clicks outside the sidebar keep default behaviour",
           wait(lambda: fmt(cur, "#{pane_id}") == main), fmt(cur, "#{pane_id}"))
     tmux("kill-pane", "-t", other)
@@ -521,8 +521,9 @@ def attention_checks(c, W, ec):
           fmt(a, "#{@claude_state}"))
     check("review: prompt stored on one line", fmt(a, "#{@claude_prompt}") == "tidy the README and fix links; ",
           repr(fmt(a, "#{@claude_prompt}")))
-    check("review: sidebar shows the prompt under a working window",
-          wait(lambda: any("tidy the README" in l for l in sidebar_lines()), 3), "\n".join(sidebar_lines()))
+    check("rows: one line per window, with how long ago (no prompt line)",
+          wait(lambda: any(" %s " % an in l and "● working" in l and "<1m ×" in l for l in sidebar_lines()), 3)
+          and not any("tidy the README" in l for l in sidebar_lines()), "\n".join(sidebar_lines()))
     run_hook(pa, "done")
     check("review: Stop in a background window -> review",
           wait(lambda: fmt(a, "#{@claude_state}") == "review", 2.5), fmt(a, "#{@claude_state}"))
@@ -536,8 +537,8 @@ def attention_checks(c, W, ec):
           wait(lambda: fmt(a, "#{@claude_state}") == "done", 3), fmt(a, "#{@claude_state}"))
     check("review: then the sidebar shows ✓ done",
           wait(lambda: any(" %s " % an in l and "✓ done" in l for l in sidebar_lines()), 3))
-    check("review: no prompt line under a done window",
-          wait(lambda: not any("tidy the README" in l for l in sidebar_lines()), 3))
+    check("rows: the age column lines up with the ×",
+          all(l.rstrip().endswith("×") for l in sidebar_lines() if " %s " % an in l))
     tmux("select-window", "-t", cur)
 
     # Finishing in the window you are looking at is done straight away.
@@ -775,9 +776,9 @@ def judge_checks(c, W):
     check("judge: the call is not tracked as a session (no TMUX_PANE)", "TMUX_PANE=unset" in calls)
     check("judge: the call sees the prompt and the reply",
           "fix the flaky login test" in calls and "Want me to open a PR?" in calls)
-    check("judge: review row shows the reason",
-          wait(lambda: any("↩ asks whether to open" in l for l in sidebar_lines()), 3),
-          "\n".join(sidebar_lines()))
+    check("judge: the window list shows status only, not the reason",
+          wait(lambda: any("◆ review" in l and fmt(t, "#{window_name}")[:10] in l for l in sidebar_lines()), 3)
+          and not any("asks whether to open" in l for l in sidebar_lines()), "\n".join(sidebar_lines()))
     tmux("select-window", "-t", t)
     check("judge: after you look, it is 'follow up', not 'done'",
           wait(lambda: any("↩ follow up" in l for l in sidebar_lines()), 3), "\n".join(sidebar_lines()))
@@ -813,8 +814,10 @@ def judge_checks(c, W):
     check("judge: a finished job is wrapped up",
           wait(lambda: fmt(t, "#{@claude_verdict}") == "wrapped", 5) and
           fmt(t, "#{@claude_note}") == "tests pass, nothing pending", fmt(t, "#{@claude_note}"))
-    check("judge: shown as ✓ reason under the review row",
-          wait(lambda: any("✓ tests pass" in l for l in sidebar_lines()), 3), "\n".join(sidebar_lines()))
+    check("judge: search shows the reason",
+          "tests pass, nothing pending" in subprocess.run(
+              ["python3", "-I", os.path.join(HOME, ".tmux", "sidebar", "search.py"), "--list", "flaky"],
+              env=tmux_env(), capture_output=True, text=True).stdout)
 
     # A new prompt clears the verdict; a late answer for the old turn is dropped.
     answer("FOLLOWUP: late answer\n")
