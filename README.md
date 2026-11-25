@@ -100,6 +100,17 @@ From the top:
     reused is marked `↻` until you send it your own next prompt. When a run
     ends, the AI check says whether it is wrapped up; a run that needs a
     follow-up rings the bell, so its tab turns yellow.
+  - **What a run is told**: each run's prompt starts with a short note
+    that this is one run of an existing schedule, so a prompt written like
+    "every hour, check my PRs" does the check instead of setting up its own
+    loop or asking about scheduling, and does not stop to ask questions
+    while nobody is watching. Skills (`/name`) are sent as they are. The
+    note is hidden from the sidebar, search and the AI check.
+  - **No repeats**: each run ends with a "Reported:" line, which is kept in
+    `~/.tmux/claude-sidebar-notes/`; the next run is shown what was already
+    reported, so "don't tell me twice" works. A run that reports nothing new
+    and is wrapped up is marked read, so an hourly check only gets your
+    attention when it has news.
   - **Unattended, but not unsupervised**: runs use your normal permission
     mode, so a run that wants to do something that needs approval waits at
     `! needs you`. You can set a model and permission mode per task.

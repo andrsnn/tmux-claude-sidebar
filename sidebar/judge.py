@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import time
 import subprocess
 import sys
 
@@ -73,6 +74,35 @@ def ring_if_scheduled(pane, turn):
     try:
         with open(tty, "w") as f:
             f.write("\a")
+    except OSError:
+        pass
+
+
+def remember_report(pane, reply):
+    """A scheduled run ends with "Reported: ..."; keep that line for the
+    task's next run (sched.py shows it as already reported)."""
+    tid = tmux("display", "-p", "-t", pane, "#{@claude_sched}")
+    if not tid:
+        return
+    lines = [ln.strip() for ln in reply.strip().splitlines() if ln.strip()]
+    found = [ln for ln in lines[-5:] if re.match(r"^[*_`]*reported\s*:", ln, re.I)]
+    if not found:
+        return
+    text = re.sub(r"^[*_`]*reported\s*:[*_`]*\s*", "", found[-1], flags=re.I).strip()
+    if not text or re.fullmatch(r"nothing( new)?\.?", text, re.I):
+        return "nothing new"
+    d = os.path.join(os.path.expanduser("~"), ".tmux", "claude-sidebar-notes")
+    path = os.path.join(d, "%s.txt" % re.sub(r"[^A-Za-z0-9_-]", "", tid))
+    try:
+        os.makedirs(d, exist_ok=True)
+        try:
+            with open(path) as f:
+                old = f.read().splitlines()
+        except OSError:
+            old = []
+        old.append("%s %s" % (time.strftime("%Y-%m-%d %H:%M"), " ".join(text.split())[:300]))
+        with open(path, "w") as f:
+            f.write("\n".join(old[-200:]) + "\n")
     except OSError:
         pass
 
@@ -157,6 +187,7 @@ def main():
         reply = last_reply_from_transcript(str(data["transcript_path"]))
     if not reply.strip():
         return
+    quiet = remember_report(pane, reply) == "nothing new"
     guess = quick_guess(reply)
     if guess:
         write(pane, turn, *guess)
@@ -164,10 +195,20 @@ def main():
     if tmux("show", "-gqv", "@claude_sidebar_judge") == "off":
         return
     prompt = tmux("display", "-p", "-t", pane, "#{@claude_prompt}")
+    if tmux("display", "-p", "-t", pane, "#{@claude_sched}"):
+        # Wording like "every hour" is the schedule's job, not pending work.
+        prompt = ("(This turn was one automatic run of a scheduled task; the "
+                  "scheduler repeats it, so judge only whether this run's result "
+                  "needs the developer to act.)\n" + prompt)
     verdict = ask_claude(prompt, reply)
     if verdict:
         write(pane, turn, *verdict)
         ring_if_scheduled(pane, turn)
+        if quiet and verdict[0] == "wrapped":
+            # A scheduled run with nothing new: no need to make it unread.
+            tmux("if-shell", "-F", "-t", pane,
+                 "#{&&:#{==:#{@claude_turn},%s},#{==:#{@claude_state},review}}" % turn,
+                 "set -w -t %s @claude_state done" % pane)
 
 
 if __name__ == "__main__":

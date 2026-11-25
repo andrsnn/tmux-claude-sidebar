@@ -42,6 +42,12 @@ from datetime import datetime, timedelta
 
 HOME = os.path.expanduser("~")
 TASKS_FILE = os.path.join(HOME, ".tmux", "claude-sidebar-schedules.json")
+# What each task's runs reported, so the next run can skip it (see judge.py).
+NOTES_DIR = os.path.join(HOME, ".tmux", "claude-sidebar-notes")
+# A scheduled prompt starts with this header; the prompt itself follows the
+# "Task:" line. hook.sh, search.py and judge.py strip the header again.
+HEADER_START = "[Scheduled run"
+HEADER_END = "\nTask: "
 GRACE = 2 * 3600            # how late a missed run may still start
 TICK = 15                   # seconds between daemon passes
 BUSY = ("working", "needs")
@@ -512,6 +518,46 @@ def choose_window(task, prev_win, viewed):
     return None, "new window (Haiku: no window has this context)" if answer else "new window"
 
 
+def notes_path(tid):
+    return os.path.join(NOTES_DIR, "%s.txt" % re.sub(r"[^A-Za-z0-9_-]", "", tid))
+
+
+def run_prompt(task):
+    """The message a run sends: the task's prompt, after a short header that
+    says this is one run of a schedule that already exists. Without it, a
+    prompt like "every hour, check my PRs" makes Claude set up its own loop.
+    A skill (/name) is sent as it is: the command has to come first."""
+    prompt = task.get("prompt", "")
+    if prompt.lstrip().startswith("/"):
+        return prompt
+    try:
+        when = Schedule(task.get("when", "")).desc
+    except ValueError:
+        when = task.get("when", "")
+    lines = [
+        '%s of "%s" (%s), started by tmux-claude-sidebar]' % (HEADER_START, task.get("name", ""), when),
+        "This message is one run of a schedule that already exists. Do the task "
+        "below once, now. Do not set up loops, schedules, cron jobs or reminders, "
+        "and do not ask about scheduling: that is handled. Nobody is watching "
+        "while this runs, so don't stop to ask questions; make sensible choices "
+        "and say what you chose. If you need a decision from me, finish what you "
+        "can and ask at the end.",
+        "End your reply with one line that starts with \"Reported:\" and briefly "
+        "lists what you told me this run (or \"Reported: nothing new\"); later "
+        "runs are shown it, so they don't repeat themselves.",
+    ]
+    try:
+        with open(notes_path(task.get("id", ""))) as f:
+            earlier = [ln.rstrip("\n") for ln in f if ln.strip()][-20:]
+    except OSError:
+        earlier = []
+    if earlier:
+        lines.append("Already reported in earlier runs (don't report these again "
+                     "unless something changed):")
+        lines += ["- " + ln for ln in earlier]
+    return "\n".join(lines) + "\n" + HEADER_END.lstrip("\n") + prompt
+
+
 def send_prompt(win, prompt):
     """Type a prompt into the Claude Code window and submit it."""
     pane = wopt(win, "@claude_pane")
@@ -535,7 +581,7 @@ def new_window(task):
         cmd += ["--model", task["model"]]
     if task.get("permission"):
         cmd += ["--permission-mode", task["permission"]]
-    cmd.append(task.get("prompt", ""))
+    cmd.append(run_prompt(task))
     d = os.path.expanduser(task.get("dir") or HOME)
     if not os.path.isdir(d):
         raise RuntimeError("folder %s does not exist" % d)
@@ -568,7 +614,7 @@ def run_task(task, key):
             how = "new window (replaced its last run)"
     if win:
         tmux("set", "-w", "-t", win, "@claude_sched", task["id"])
-        send_prompt(win, task.get("prompt", ""))
+        send_prompt(win, run_prompt(task))
     else:
         win = new_window(task)
         tmux("set", "-w", "-t", win, "@claude_sched", task["id"])

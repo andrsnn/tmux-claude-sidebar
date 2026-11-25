@@ -33,7 +33,11 @@ try:
 except Exception:
     d = {}
 print(str(d.get("transcript_path") or "").replace("\n", " "))
-s = " ".join(str(d.get("prompt") or "").split())[:400]
+raw = str(d.get("prompt") or "")
+# A scheduled run (sched.py): keep the task, not the header before it.
+if raw.startswith("[Scheduled run") and "\nTask: " in raw:
+    raw = raw.split("\nTask: ", 1)[1]
+s = " ".join(raw.split())[:400]
 # tmux reads an argument ending in ";" as a command separator.
 print(s + " " if s.endswith(";") else s)
 ' 2>/dev/null

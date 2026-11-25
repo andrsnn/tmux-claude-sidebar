@@ -1083,6 +1083,11 @@ def sched_checks(c, W):
         cli("tick")
         log = open(runs).read()
         check("sched: a task that is due runs", "due-run" in log, log)
+        check("sched: a run says it is one run of an existing schedule (no loops, no questions)",
+              '[Scheduled run of "due"' in log and "Do not set up loops" in log and "Task: due-run" in log,
+              log[-600:])
+        check("sched: a skill is sent as it is, command first",
+              "\n/standup-notes\n" in "\n" + log)
         check("sched: a run more than 2 hours late is skipped as missed",
               "miss-run" not in log and state().get("tmiss", {}).get("note", "").startswith("missed"),
               str(state().get("tmiss")))
@@ -1102,13 +1107,41 @@ def sched_checks(c, W):
         dp = main_pane(dw)
         answer("FOLLOWUP: asks which branch to rebase\n")
         e = dict(tmux_env(dp), PATH=env["PATH"])
-        for ev, payload in (("prompt", {"prompt": "due-run"}),
-                            ("done", {"last_assistant_message": "Rebased 3 of 4. Which branch for the last?"})):
+        header = log[log.index('[Scheduled run of "due"'):log.index("Task: due-run")]
+        for ev, payload in (("prompt", {"prompt": header + "Task: due-run"}),
+                            ("done", {"last_assistant_message":
+                                      "Rebased 3 of 4.\nReported: PR 12 rebased; PR 14 has conflicts\n"
+                                      "Which branch for the last?"})):
             subprocess.run(["sh", "-c", load_ec().hook_command(ev)], env=e, input=json.dumps(payload), text=True)
+        check("sched: the header is not kept as your prompt", fmt(dw, "#{@claude_prompt}") == "due-run",
+              fmt(dw, "#{@claude_prompt}"))
         check("sched: a scheduled follow-up rings the bell",
               wait(lambda: "!" in fmt(dw, "#{window_flags}"), 6), fmt(dw, "#{window_flags}"))
         check("sched: ...and shows under its task with the reason",
               wait(lambda: any("↩ asks which branch" in l for l in lines()), 4), "\n".join(lines()))
+        notes = os.path.join(HOME, ".tmux", "claude-sidebar-notes", "tdue.txt")
+        check("sched: what a run reported is remembered",
+              wait(lambda: os.path.exists(notes) and "PR 12 rebased; PR 14 has conflicts" in open(notes).read(), 3))
+        tmux("set", "-w", "-t", dw, "@claude_state", "done")
+        cli("resume", "tdue")
+        os.remove(runs)
+        cli("run", "tdue")
+        check("sched: the next run is told what was already reported",
+              wait(lambda: os.path.exists(runs) and "Already reported" in open(runs).read() or
+                   "PR 12 rebased" in tmux("capture-pane", "-p", "-S", "-50", "-t", dp), 3))
+        # A run with nothing new that is wrapped up does not stay unread.
+        nw = state()["tdue"]["window"]
+        np_ = main_pane(nw)
+        answer("WRAPPED: nothing new this run\n")
+        e2 = dict(tmux_env(np_), PATH=env["PATH"])
+        for ev, payload in (("prompt", {"prompt": "due-run"}),
+                            ("done", {"last_assistant_message": "No changes.\nReported: nothing new"})):
+            subprocess.run(["sh", "-c", load_ec().hook_command(ev)], env=e2, input=json.dumps(payload), text=True)
+        check("sched: a run with nothing new is marked read (done), not unread",
+              wait(lambda: fmt(nw, "#{@claude_state}") == "done", 6), fmt(nw, "#{@claude_state}"))
+        check("sched: and adds nothing to what was reported",
+              open(notes).read().count("\n") == 1, open(notes).read())
+        cli("pause", "tdue")
 
         # Old run windows that are done, seen and not the latest get closed.
         old = rw
@@ -1131,6 +1164,7 @@ def sched_checks(c, W):
             os.path.exists(tasks_file) and os.remove(tasks_file)
         else:
             open(tasks_file, "w").write(saved)
+        shutil.rmtree(os.path.join(HOME, ".tmux", "claude-sidebar-notes"), ignore_errors=True)
         clear_states()
         if server_path:
             tmux("set-environment", "-g", "PATH", server_path)

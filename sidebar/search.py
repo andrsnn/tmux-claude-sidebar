@@ -102,6 +102,9 @@ def prompt_text(obj):
         content = " ".join(parts)
     if not isinstance(content, str):
         return None
+    # A scheduled run (sched.py): the task, without the header before it.
+    if content.startswith("[Scheduled run") and "\nTask: " in content:
+        content = content.split("\nTask: ", 1)[1]
     text = " ".join(content.split())
     # Slash-command wrappers, local command output, system notes.
     if not text or text.startswith("<") or text.startswith("[Request interrupted"):
