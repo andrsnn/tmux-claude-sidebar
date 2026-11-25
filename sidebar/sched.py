@@ -759,7 +759,8 @@ def clip(text, width):
 
 
 STATE_LABEL = {"needs": "! needs you", "review": "◆ review", "working": "● working",
-               "done": "✓ done", "idle": "○ idle", "followup": "↩ follow up"}
+               "done": "✓ done", "idle": "○ idle", "followup": "↩ follow up",
+               "todo": "↩ to do"}
 
 
 def run_status(win):
@@ -767,8 +768,8 @@ def run_status(win):
         return "", ""
     st, verdict, note = (tmux("display", "-p", "-t", win,
                               "#{@claude_state}|#{@claude_verdict}|#{@claude_note}").split("|") + ["", "", ""])[:3]
-    if st == "done" and verdict == "followup":
-        st = "followup"
+    if verdict == "followup":
+        st = {"review": "followup", "done": "todo"}.get(st, st)
     return st or "starting", note
 
 
@@ -792,7 +793,8 @@ def ui(stdscr, args):
         pass
     colors = {}
     for i, (k, fg) in enumerate((("needs", curses.COLOR_YELLOW), ("review", curses.COLOR_YELLOW),
-                                 ("followup", curses.COLOR_MAGENTA), ("working", curses.COLOR_BLUE),
+                                 ("followup", curses.COLOR_MAGENTA), ("todo", curses.COLOR_MAGENTA),
+                                 ("working", curses.COLOR_BLUE),
                                  ("done", curses.COLOR_GREEN), ("accent", 208 if curses.COLORS >= 256 else curses.COLOR_RED),
                                  ("cyan", curses.COLOR_CYAN), ("err", curses.COLOR_RED)), 1):
         curses.init_pair(i, fg, -1)

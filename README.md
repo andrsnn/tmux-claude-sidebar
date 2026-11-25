@@ -12,7 +12,7 @@ cadence ("wrap up the day at 5:30", "are my PRs rebased?").
 
 ## What the sidebar shows
 
-<img align="right" width="300" src="docs/sidebar.png" alt="Close-up of the sidebar. Sorted by what needs you: a window that needs you, two windows to review (one finished and wrapped up, one asking which channel to post in), one to follow up, one working, then done and idle windows. Each row shows the window number, name, status and how long ago it changed. Below, a SCHEDULED section with four tasks: wrap up the day (next 17:30, its last run in window 10 is unread and asks which tickets to close), PRs rebased? (next 9:00, last run reused window 2, which is marked with a circular arrow in the list above), prod check (paused) and standup notes (missed 9:00).">
+<img align="right" width="300" src="docs/sidebar.png" alt="Close-up of the sidebar. Sorted by what needs you: a window that needs you, two unread finished windows (one wrapped up, marked review; one asking which channel to post in, marked follow up), a follow-up already read (marked to do), one working, then done and idle windows. Each row shows the window number, name, status and how long ago it changed. Below, a SCHEDULED section with four tasks: wrap up the day (next 17:30, its last run in window 10 is unread and asks which tickets to close), PRs rebased? (next 9:00, last run reused window 2, which is marked with a circular arrow in the list above), prod check (paused) and standup notes (missed 9:00).">
 
 From the top:
 
@@ -23,10 +23,14 @@ From the top:
   window you are in.
 - **Status**:
   - `! needs you` (bold yellow): a permission prompt or a question dialog.
-  - `◆ review` (yellow): Claude finished while you were not looking.
-  - `↩ follow up` (magenta): you have seen it, but the turn is not wrapped up
-    (Claude asked something, offered options, hit an error, or left steps
-    undone).
+  - `◆ review` (yellow): Claude finished while you were not looking, and
+    the work is wrapped up (or the AI check has not answered yet).
+  - `↩ follow up` (bold magenta): Claude finished while you were not
+    looking, and the turn is not wrapped up: it asked something, offered
+    options, hit an error, or left steps undone.
+  - `↩ to do` (magenta): a follow-up you have already looked at. It stays in
+    the list until you reply or mark it wrapped up, but no longer counts as
+    unread.
   - `● working` (blue), `✓ done` (green, wrapped up and seen), `○ idle` (grey).
 - **Why a window needs you** (`↩ asks whether to open a PR`) and your last
   prompt are in search (`Ctrl-b F`), which keeps the list itself short.
@@ -54,15 +58,16 @@ From the top:
 - **Wrapped up, or come back to it?** When a turn ends, a short background
   call to Claude (`claude -p --model haiku`, with your existing login) reads
   your last prompt and Claude's final message and decides. A turn that needs
-  you shows `↩ follow up` and stays near the top even after you have looked,
-  until you send another prompt or right-click it and choose "Mark as wrapped
-  up". Before that call answers (a few seconds), a reply that ends with a
+  you shows `↩ follow up` until you look at it, then `↩ to do`, which stays
+  near the top until you send another prompt or right-click it and choose
+  "Mark as wrapped up". Before that call answers (a few seconds), a reply that ends with a
   question already counts as a follow-up. It costs one small Haiku request per
   finished turn; turn it off from the right-click menu, or with
   `~/.tmux/sidebar/sidebar.sh judge off`. That call runs with hooks, tools,
   MCP servers and session saving switched off.
-- **Sorted by what needs you**: `needs you`, then `review`, then `follow up`,
-  then the rest by when they last changed, then windows without Claude Code.
+- **Sorted by what needs you**: `needs you`, then unread (`review` and
+  `follow up`), then `to do`, then the rest by when they last changed, then
+  windows without Claude Code.
   Click `sort:` at the top to switch to window-number order (kept after tmux
   restarts). The numbers shown are always the tmux window numbers, so
   `Ctrl-b 3` still goes to window 3.

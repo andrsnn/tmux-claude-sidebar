@@ -23,6 +23,7 @@ YELLOW="${ESC}[33m"
 BYELLOW="${ESC}[1;33m"
 ORANGE="${ESC}[38;5;208m"
 MAGENTA="${ESC}[35m"
+BMAGENTA="${ESC}[1;35m"
 CYAN="${ESC}[36m"
 EL="${ESC}[K"
 
@@ -56,7 +57,8 @@ stlabel() {
     working) st="${BLUE}● working${R}  " ;;
     needs)   st="${BYELLOW}! needs you${R}" ;;
     review)  st="${YELLOW}◆ review${R}   " ;;
-    followup) st="${MAGENTA}↩ follow up${R}" ;;
+    followup) st="${BMAGENTA}↩ follow up${R}" ;;   # unread
+    todo)    st="${MAGENTA}↩ to do${R}    " ;;      # read, still yours to do
     done)    st="${GREEN}✓ done${R}     " ;;
     idle)    st="${GREY}○ idle${R}     " ;;
     *)       st="           " ;;   # no Claude Code session in this window
@@ -148,21 +150,26 @@ EOF
       state=done
     fi
     # A finished turn you have seen, that the judge says is not wrapped up.
-    [ "$state" = done ] && [ "$verdict" = followup ] && state=followup
+    # A finished turn the judge says is not wrapped up: "follow up" while
+    # unread, "to do" once you have looked at it.
+    disp=$state
+    if [ "$verdict" = followup ]; then
+      case "$state" in review) disp=followup ;; done) disp=todo ;; esac
+    fi
     if [ "$sortmode" = index ]; then
       tier=0 key=0
     else
       # Needs you, unseen results, follow-ups, then the rest by most recently
       # updated, then windows without Claude Code.
-      case "$state" in
-        needs) tier=0 ;; review) tier=1 ;; followup) tier=2 ;; '') tier=4 ;; *) tier=3 ;;
+      case "$disp" in
+        needs) tier=0 ;; review|followup) tier=1 ;; todo) tier=2 ;; '') tier=4 ;; *) tier=3 ;;
       esac
       key=$((9999999999 - updated))
       [ "$tier" = 4 ] && key=0
     fi
     # Windows a schedule opened are listed under SCHEDULED, not here.
     [ "$owned" = 1 ] && continue
-    rows="$rows$tier|$key|$idx|$wid|$active|$state|$updated|$verdict|$sched|$name
+    rows="$rows$tier|$key|$idx|$wid|$active|$state|$updated|$verdict|$disp|$sched|$name
 "
   done <<EOF
 $(tmux list-windows -t "$pane" -F "$WFMT" 2>/dev/null)
@@ -198,10 +205,10 @@ EOF
   # Rows left for the reasons under scheduled runs, so the window and task
   # rows themselves always fit.
   spare=$((height - 3 - nwin - nsched))
-  while IFS='|' read -r tier key idx wid active state updated verdict sched name; do
+  while IFS='|' read -r tier key idx wid active state updated verdict disp sched name; do
     [ -n "$wid" ] || continue
     name=${name//\\\$/\$}
-    stlabel "$state"
+    stlabel "$disp"
     n=$(fit "$name" "$namew")
     # How long ago its status last changed.
     a="   "
@@ -241,7 +248,9 @@ EOF
 $info
 EOF
       rnote=${rnote//\\\$/\$}
-      [ "$rstate" = done ] && [ "$rverdict" = followup ] && rstate=followup
+      if [ "$rverdict" = followup ]; then
+        case "$rstate" in review) rstate=followup ;; done) rstate=todo ;; esac
+      fi
       if [ -n "$rstate" ]; then stlabel "$rstate"; else st="${GREY}starting${R}   "; fi
       case "$last" in ''|*[!0-9]*) ran="" ;; *) ran="ran $(age $((now - last))) ago" ;; esac
       [ "$ran" = "ran <1m ago" ] && ran="ran just now"
@@ -251,7 +260,7 @@ EOF
       [ "$row" -le "$height" ] && map="$map $((row - 1))=d:$twin"
       # Why it needs you, when it does.
       if [ -n "$rnote" ] && [ "$spare" -gt 0 ]; then
-        case "$rstate" in review|followup|needs)
+        case "$rstate" in review|followup|todo|needs)
           if [ "$rverdict" = followup ]; then mk="${MAGENTA}↩${GREY}"; else mk="${GREEN}✓${GREY}"; fi
           line "      ${mk} ${GREY}$(fit "$rnote" $((inner - 9)))${R}"
           [ "$row" -le "$height" ] && map="$map $((row - 1))=d:$twin"

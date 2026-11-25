@@ -23,9 +23,9 @@ from datetime import datetime
 
 STATE_LABEL = {
     "needs": "! needs you", "review": "◆ review", "working": "● working",
-    "done": "✓ done", "idle": "○ idle", "followup": "↩ follow up", "": "",
+    "done": "✓ done", "idle": "○ idle", "followup": "↩ follow up", "todo": "↩ to do", "": "",
 }
-TIER = {"needs": 0, "review": 1, "followup": 2}
+TIER = {"needs": 0, "review": 1, "followup": 1, "todo": 2}
 
 
 def tmux(*args):
@@ -68,8 +68,9 @@ def windows():
         w = {k: cols[k].get(wid, "") for k in cols}
         w.update(id=wid, where=where, updated=as_int(w["updated"]),
                  prompt_at=as_int(w["prompt_at"]))
-        if w["state"] == "done" and w["verdict"] == "followup":
-            w["state"] = "followup"
+        if w["verdict"] == "followup":
+            # Not wrapped up: "follow up" while unread, "to do" once read.
+            w["state"] = {"review": "followup", "done": "todo"}.get(w["state"], w["state"])
         out.append(w)
     return out
 
@@ -245,7 +246,7 @@ def ui(stdscr, client, wins):
         pass
     pairs = {}
     for i, (key, fg) in enumerate((("needs", curses.COLOR_YELLOW), ("review", curses.COLOR_YELLOW),
-                                   ("followup", curses.COLOR_MAGENTA),
+                                   ("followup", curses.COLOR_MAGENTA), ("todo", curses.COLOR_MAGENTA),
                                    ("working", curses.COLOR_BLUE), ("done", curses.COLOR_GREEN),
                                    ("idle", -1), ("match", curses.COLOR_YELLOW),
                                    ("accent", 208 if curses.COLORS >= 256 else curses.COLOR_RED)), 1):

@@ -776,12 +776,19 @@ def judge_checks(c, W):
     check("judge: the call is not tracked as a session (no TMUX_PANE)", "TMUX_PANE=unset" in calls)
     check("judge: the call sees the prompt and the reply",
           "fix the flaky login test" in calls and "Want me to open a PR?" in calls)
-    check("judge: the window list shows status only, not the reason",
-          wait(lambda: any("◆ review" in l and fmt(t, "#{window_name}")[:10] in l for l in sidebar_lines()), 3)
+    tname = fmt(t, "#{window_name}")[:10]
+    row = lambda: next((l for l in sidebar_lines() if tname in l and "×" in l), "")
+    check("judge: unread and not wrapped up -> 'follow up' (status only, no reason)",
+          wait(lambda: "↩ follow up" in row(), 3)
           and not any("asks whether to open" in l for l in sidebar_lines()), "\n".join(sidebar_lines()))
+    check("judge: an unread follow-up turns its tab yellow",
+          "bg=#f9e2af" in fmt(t, "#{E:window-status-format}").lower())
+    check("judge: the menu still offers 'Mark as reviewed' for it",
+          "=review=followup=" in tmux("show", "-pqv", "-t", sidebar_panes(cur)[0], "@sidebar_rows"),
+          tmux("show", "-pqv", "-t", sidebar_panes(cur)[0], "@sidebar_rows"))
     tmux("select-window", "-t", t)
-    check("judge: after you look, it is 'follow up', not 'done'",
-          wait(lambda: any("↩ follow up" in l for l in sidebar_lines()), 3), "\n".join(sidebar_lines()))
+    check("judge: once you have looked, it is 'to do' (read, not done)",
+          wait(lambda: "↩ to do" in row() and "follow up" not in row(), 3), "\n".join(sidebar_lines()))
     tmux("select-window", "-t", cur)
     other = [w for w in ws if w not in (t, cur)][-1]
     tmux("set", "-w", "-t", other, "@claude_state", "done")
@@ -789,10 +796,10 @@ def judge_checks(c, W):
 
     def follow_first():
         lines = sidebar_lines()
-        f = [i for i, l in enumerate(lines) if "↩ follow up" in l]
+        f = [i for i, l in enumerate(lines) if "↩ to do" in l]
         d = [i for i, l in enumerate(lines) if "✓ done" in l and "×" in l]
         return f and d and f[0] < d[0]
-    check("judge: a follow-up sorts above done windows, even newer ones",
+    check("judge: a 'to do' sorts above done windows, even newer ones",
           wait(follow_first, 3), "\n".join(sidebar_lines()))
     check("judge: the tab is not yellow once seen",
           "#f9e2af" not in fmt(t, "#{E:window-status-format}").lower())
