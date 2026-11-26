@@ -21,6 +21,10 @@
 #   sidebar.sh wrapped <window>       mark a follow-up as wrapped up
 #   sidebar.sh judge on|off|toggle|load   the AI wrapped-up / follow-up check
 #   sidebar.sh sched <client> [add|<task id>]  the scheduled tasks popup
+#   sidebar.sh keys position|index|toggle|load  what prefix 1-9 jump to: the
+#                                     window number (tmux's own) or the row
+#                                     in the sidebar's list
+#   sidebar.sh jump <n> <client>      go to the n-th window in the list
 # POSIX sh. Never fails loudly: hooks should not spam the status line.
 
 DIR=$(cd "$(dirname "$0")" && pwd)
@@ -28,6 +32,10 @@ DIR=$(cd "$(dirname "$0")" && pwd)
 WIDTH_FILE="$HOME/.tmux/claude-sidebar-width"
 # So does the window order: "attention" (the default) or "index".
 SORT_FILE="$HOME/.tmux/claude-sidebar-sort"
+# And what prefix 1-9 do: "index" (tmux's own) or "position" (list rows).
+KEYS_FILE="$HOME/.tmux/claude-sidebar-keys"
+# Your prefix 1-9 bindings from before "position" was turned on.
+DIGITS_FILE="$DIR/digit-keys.conf"
 # And whether finished turns are checked by Claude (judge.py): "on" or "off".
 JUDGE_FILE="$HOME/.tmux/claude-sidebar-judge"
 # tmux's own right-click binding, used outside the sidebar.
@@ -161,6 +169,7 @@ click() {
     k:S) toggle "$(tmux display-message -p -t "$pane" '#{session_id}')" ;;
     k:F) search "$client" ;;
     k:T) sched "$client" ;;
+    k:K) keys_mode toggle ;;
     k:?)
       # Same as typing Ctrl-b <key>: whatever the user has bound runs, so
       # rename, the kill-window confirm and choose-tree behave as when typed.
@@ -239,6 +248,74 @@ wrapped() {
   fi
   tmux set -w -t "$1" @claude_verdict wrapped \; set -w -t "$1" @claude_note "marked done by you"
   reviewed "$1"
+}
+
+# prefix 1-9: tmux's window numbers (default), or the rows of the list.
+keys_mode() {
+  m="$1"
+  if [ "$m" = toggle ]; then
+    if [ "$(tmux show-option -gqv @claude_sidebar_keys)" = position ]; then m=index; else m=position; fi
+  fi
+  case "$m" in
+    load)
+      [ "$(cat "$KEYS_FILE" 2>/dev/null)" = position ] && keys_mode position nosave
+      return 0 ;;
+    position)
+      # Keep your own bindings for these keys, once, to put back later.
+      if ! tmux list-keys -T prefix 1 2>/dev/null | grep -q 'sidebar.sh'; then
+        : > "$DIGITS_FILE.tmp"
+        for d in 1 2 3 4 5 6 7 8 9; do
+          b=$(tmux list-keys -T prefix "$d" 2>/dev/null)
+          if [ -n "$b" ]; then printf '%s\n' "$b" >> "$DIGITS_FILE.tmp"
+          else echo "unbind-key -T prefix $d" >> "$DIGITS_FILE.tmp"; fi
+        done
+        mv "$DIGITS_FILE.tmp" "$DIGITS_FILE"
+      fi
+      for d in 1 2 3 4 5 6 7 8 9; do
+        tmux bind-key -T prefix "$d" run-shell -b "'$DIR/sidebar.sh' jump $d #{q:client_name}"
+      done
+      tmux set-option -g @claude_sidebar_keys position ;;
+    index)
+      if [ -f "$DIGITS_FILE" ]; then
+        tmux source-file "$DIGITS_FILE"
+      else
+        for d in 1 2 3 4 5 6 7 8 9; do tmux bind-key -T prefix "$d" select-window -t ":=$d"; done
+      fi
+      tmux set-option -gu @claude_sidebar_keys ;;
+    *) return 0 ;;
+  esac
+  if [ "$2" != nosave ]; then
+    mkdir -p "$(dirname "$KEYS_FILE")" && echo "$m" > "$KEYS_FILE"
+    if [ "$m" = position ]; then
+      tmux display-message "Ctrl-b 1-9 now jump to rows of the sidebar list"
+    else
+      tmux display-message "Ctrl-b 1-9 jump to window numbers again"
+    fi
+  fi
+  wake
+  return 0
+}
+
+# Go to the n-th window row of the list in the client's current window.
+jump() {
+  n="$1" client="$2"
+  win=$(tmux display -p -c "$client" '#{window_id}' 2>/dev/null)
+  sb=$(tmux list-panes -t "$win" -F '#{?@sidebar,#{pane_id},}' 2>/dev/null | grep . | head -n 1)
+  target="" i=0
+  if [ -n "$sb" ]; then
+    for item in $(tmux show-option -pqv -t "$sb" @sidebar_map); do
+      case "$item" in
+        *=w:*) i=$((i + 1)); [ "$i" = "$n" ] && { target="${item#*=w:}"; break; } ;;
+      esac
+    done
+  fi
+  if [ -n "$target" ]; then
+    tmux switch-client -c "$client" -t "$target"
+  elif [ -z "$sb" ]; then
+    # No sidebar here (hidden): what the key does in tmux.
+    tmux select-window -t ":=$n" 2>/dev/null
+  fi
+  return 0
 }
 
 judge() {
@@ -386,6 +463,8 @@ case "$cmd" in
   wrapped) wrapped "$@" ;;
   judge) judge "${1:-toggle}" ;;
   sched) sched "$@" ;;
-  *) echo "usage: $0 ensure|ensure-session|ensure-all|toggle|click|guard|resize|cleanup|width|dragged|seen|sort|search|act|move|reviewed|save-right-click|wrapped|judge|sched" >&2; exit 2 ;;
+  keys) keys_mode "${1:-toggle}" ;;
+  jump) jump "$@" ;;
+  *) echo "usage: $0 ensure|ensure-session|ensure-all|toggle|click|guard|resize|cleanup|width|dragged|seen|sort|search|act|move|reviewed|save-right-click|wrapped|judge|sched|keys|jump" >&2; exit 2 ;;
 esac
 exit 0

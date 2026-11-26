@@ -393,6 +393,7 @@ def run(c, work, codez):
     modifier_drag_checks(c, W)
     width_checks(c, W)
     attention_checks(c, W, ec)
+    keys_checks(c, W)
     menu_checks(c, W)
     search_checks(c, W)
     judge_checks(c, W)
@@ -1178,6 +1179,70 @@ def sched_checks(c, W):
         if server_path:
             tmux("set-environment", "-g", "PATH", server_path)
         tmux("source-file", CONF)          # starts the scheduler again
+
+
+def keys_checks(c, W):
+    """Optional: prefix 1-9 jump to rows of the list, not window numbers."""
+    clear_states()
+    keys_file = os.path.join(HOME, ".tmux", "claude-sidebar-keys")
+    saved = open(keys_file).read() if os.path.exists(keys_file) else None
+    before = [tmux("list-keys", "-T", "prefix", str(d)) for d in range(1, 10)]
+    ws = windows()
+    cur = current_window()
+    # Make the list order differ from the window numbers.
+    first, second = ws[-1], ws[-2]
+    now = int(time.time())
+    tmux("set", "-w", "-t", first, "@claude_state", "needs")
+    tmux("set", "-w", "-t", first, "@claude_updated", str(now))
+    tmux("set", "-w", "-t", second, "@claude_state", "working")
+    tmux("set", "-w", "-t", second, "@claude_updated", str(now))
+    fname, sname = fmt(first, "#{window_name}")[:10], fmt(second, "#{window_name}")[:10]
+    try:
+        check("keys: off by default (shows window numbers)",
+              tmux("show", "-gqv", "@claude_sidebar_keys") == "" and
+              "select-window" in before[0], before[0])
+        y = wait(lambda: row_of(sidebar_panes(current_window())[0], "jump to window"), 3)
+        c.click(3, y)
+        check("keys: clicking the 1-9 row turns it on",
+              wait(lambda: tmux("show", "-gqv", "@claude_sidebar_keys") == "position", 3) and
+              os.path.exists(keys_file) and open(keys_file).read().strip() == "position")
+        check("keys: the legend says so",
+              wait(lambda: any("jump to list row" in l for l in sidebar_lines()), 3))
+        check("keys: prefix 1-9 are rebound", all("sidebar.sh" in tmux("list-keys", "-T", "prefix", str(d))
+                                                  for d in range(1, 10)))
+        rows = lambda: [l for l in sidebar_lines() if "×" in l]
+        check("keys: the list shows positions 1, 2, ... for its rows",
+              wait(lambda: rows() and rows()[0][1:3] == " 1" and fname in rows()[0]
+                   and rows()[1][1:3] == " 2" and sname in rows()[1], 3), "\n".join(sidebar_lines()))
+        c.prefix("1")
+        check("keys: prefix 1 goes to the top row", wait(lambda: current_window() == first, 3),
+              current_window())
+        c.prefix("2")
+        check("keys: prefix 2 goes to the second row", wait(lambda: current_window() == second, 3),
+              current_window())
+        tmux("select-window", "-t", cur)
+        tmux("source-file", CONF)
+        time.sleep(1)
+        check("keys: kept after reloading the config",
+              tmux("show", "-gqv", "@claude_sidebar_keys") == "position" and
+              "sidebar.sh" in tmux("list-keys", "-T", "prefix", "1"))
+        y = wait(lambda: row_of(sidebar_panes(current_window())[0], "jump to list row"), 3)
+        c.click(3, y)
+        check("keys: clicking again turns it off",
+              wait(lambda: tmux("show", "-gqv", "@claude_sidebar_keys") == "", 3))
+        check("keys: your own 1-9 bindings are back exactly",
+              [tmux("list-keys", "-T", "prefix", str(d)) for d in range(1, 10)] == before)
+        check("keys: the list shows window numbers again",
+              wait(lambda: any(("%2s %s" % (fmt(first, "#{window_index}"), fname)) in l
+                               for l in sidebar_lines()), 3), "\n".join(sidebar_lines()))
+    finally:
+        if tmux("show", "-gqv", "@claude_sidebar_keys") == "position":
+            subprocess.run([os.path.join(HOME, ".tmux", "sidebar", "sidebar.sh"), "keys", "index"], env=tmux_env())
+        if saved is None:
+            os.path.exists(keys_file) and os.remove(keys_file)
+        else:
+            open(keys_file, "w").write(saved)
+        clear_states()
 
 
 def descendants(pid):

@@ -67,6 +67,13 @@ From the top:
   Click `sort:` at the top to switch to window-number order (kept after tmux
   restarts). The numbers shown are always the tmux window numbers, so
   `Ctrl-b 3` still goes to window 3.
+- **Number keys by list position** (optional, off by default): click the
+  `1-9` line under KEYS, or choose "Number keys: jump to list rows" in the
+  right-click menu. `Ctrl-b 1` then goes to the top row of the list,
+  `Ctrl-b 2` to the second, and so on, and the list shows those numbers
+  (rows past the ninth show none). The status bar keeps tmux's own window
+  numbers. Turning it off, or uninstalling, puts your previous `Ctrl-b 1-9`
+  bindings back. The choice is kept after tmux restarts.
 - **Search every prompt** (`Ctrl-b F`, or click `[search]`): with nothing
   typed it lists each Claude window once with your last prompt, needs-you
   first. Type to search every prompt you have sent in every window, across

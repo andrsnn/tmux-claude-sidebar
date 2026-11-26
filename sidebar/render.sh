@@ -89,8 +89,7 @@ is_shell() {
   return 1
 }
 
-KEYS="1-9|jump to window|
-n|next window|n
+KEYS="n|next window|n
 p|previous window|p
 l|last window|l
 w|pick from list|w
@@ -113,8 +112,8 @@ start=$(date +%s)
 SECONDS=0
 last_stall=0
 while :; do
-  info=$(tmux display-message -p -t "$pane" "#{pane_width}|#{pane_height}|#{pane_in_mode}|#{session_id}|#{window_active}|#{session_attached}|#{@claude_sidebar_sort}|#{@claude_sidebar_stall}|#{@claude_sched_file}|#{prefix}|#{session_name}" 2>/dev/null) || exit 0
-  IFS='|' read -r width height inmode sid onwin attached sortmode stall schedf prefix sess <<EOF
+  info=$(tmux display-message -p -t "$pane" "#{pane_width}|#{pane_height}|#{pane_in_mode}|#{session_id}|#{window_active}|#{session_attached}|#{@claude_sidebar_keys}|#{@claude_sidebar_sort}|#{@claude_sidebar_stall}|#{@claude_sched_file}|#{prefix}|#{session_name}" 2>/dev/null) || exit 0
+  IFS='|' read -r width height inmode sid onwin attached keysmode sortmode stall schedf prefix sess <<EOF
 $info
 EOF
   # A stray scroll or drag can put the sidebar in copy mode, which freezes it.
@@ -238,6 +237,7 @@ EOF
   # Rows left for the reasons under scheduled runs, so the window and task
   # rows themselves always fit.
   spare=$((height - 3 - nwin - nsched))
+  pos=0
   while IFS='|' read -r tier key idx wid active state updated verdict disp sched name; do
     [ -n "$wid" ] || continue
     name=${name//\\\$/\$}
@@ -246,7 +246,14 @@ EOF
     # How long ago its status last changed.
     a="   "
     if [ -n "$state" ] && [ "$updated" != 0 ]; then age_ $((now - updated)); printf -v a '%3s' "$A"; fi
-    printf -v i '%2s' "$idx"
+    # The number shown is what prefix + number jumps to: the window number,
+    # or (keys "position") the row in this list, for the first nine rows.
+    if [ "$keysmode" = position ]; then
+      pos=$((pos + 1))
+      if [ "$pos" -le 9 ]; then i=" $pos"; else i="  "; fi
+    else
+      printf -v i '%2s' "$idx"
+    fi
     # The × in the last drawn column closes the window (see sidebar.sh click).
     if [ "$active" = 1 ]; then
       line "${ORANGE}▌${BOLD}${i} ${n}${R} ${st} ${GREY}${a} ×${R}"
@@ -323,12 +330,15 @@ EOF
   line ""
   line " ${GREY}KEYS · press${R} ${ORANGE}${prefix}${R} ${GREY}first${R}"
   line ""
+  # Clicking "1-9" switches what the number keys jump to.
+  if [ "$keysmode" = position ]; then k1="1-9|jump to list row|K"; else k1="1-9|jump to window|K"; fi
   while IFS='|' read -r key desc act; do
     fit_ "$key" 4; k4=$F
     fit_ "$desc" $((inner - 5))
     line " ${ORANGE}${k4}${R}${F}"
     [ -n "$act" ] && [ "$row" -le "$height" ] && map="$map $((row - 1))=k:$act"
   done <<EOF
+$k1
 $KEYS
 EOF
   line ""

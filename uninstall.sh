@@ -33,6 +33,12 @@ if tmux list-sessions >/dev/null 2>&1; then
   tmux unbind-key S 2>/dev/null || true
   tmux unbind-key F 2>/dev/null || true
   tmux unbind-key T 2>/dev/null || true
+  # prefix 1-9: your own bindings, if "jump to list rows" was on.
+  if [ "$(tmux show-option -gqv @claude_sidebar_keys)" = position ] &&
+     [ -f "$HOME/.tmux/sidebar/digit-keys.conf" ]; then
+    tmux source-file "$HOME/.tmux/sidebar/digit-keys.conf" 2>/dev/null || true
+  fi
+  tmux set-option -gu @claude_sidebar_keys 2>/dev/null || true
   # Right-click: the binding that was there before install.
   if [ -f "$HOME/.tmux/sidebar/right-click.conf" ]; then
     tmux source-file "$HOME/.tmux/sidebar/right-click.conf" 2>/dev/null || true
@@ -58,7 +64,8 @@ fi
 
 rm -rf "$HOME/.tmux/sidebar"
 rm -f "$HOME/.tmux/claude-sidebar-width" "$HOME/.tmux/claude-sidebar-sort" \
-      "$HOME/.tmux/claude-sidebar-judge" "$HOME"/.tmux/claude-sidebar-sched-*
+      "$HOME/.tmux/claude-sidebar-judge" "$HOME/.tmux/claude-sidebar-keys" \
+      "$HOME"/.tmux/claude-sidebar-sched-*
 # Your scheduled tasks are kept, in case you install again.
 [ -f "$HOME/.tmux/claude-sidebar-schedules.json" ] &&
   echo "Kept your scheduled tasks in ~/.tmux/claude-sidebar-schedules.json."
