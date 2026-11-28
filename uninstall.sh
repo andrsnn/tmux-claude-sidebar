@@ -65,6 +65,7 @@ fi
 rm -rf "$HOME/.tmux/sidebar"
 rm -f "$HOME/.tmux/claude-sidebar-width" "$HOME/.tmux/claude-sidebar-sort" \
       "$HOME/.tmux/claude-sidebar-judge" "$HOME/.tmux/claude-sidebar-keys" \
+      "$HOME/.tmux/claude-sidebar-stale-days" \
       "$HOME"/.tmux/claude-sidebar-sched-*
 # Your scheduled tasks are kept, in case you install again.
 [ -f "$HOME/.tmux/claude-sidebar-schedules.json" ] &&

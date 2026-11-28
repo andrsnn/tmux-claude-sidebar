@@ -394,6 +394,7 @@ def run(c, work, codez):
     width_checks(c, W)
     attention_checks(c, W, ec)
     keys_checks(c, W)
+    stale_checks(c, W)
     menu_checks(c, W)
     search_checks(c, W)
     judge_checks(c, W)
@@ -1179,6 +1180,103 @@ def sched_checks(c, W):
         if server_path:
             tmux("set-environment", "-g", "PATH", server_path)
         tmux("source-file", CONF)          # starts the scheduler again
+
+
+def stale_checks(c, W):
+    """The [x close N stale] button closes windows idle for a day or more."""
+    clear_states()
+    stale_file = os.path.join(HOME, ".tmux", "claude-sidebar-stale-days")
+    saved = open(stale_file).read() if os.path.exists(stale_file) else None
+    script = os.path.join(HOME, ".tmux", "sidebar", "sidebar.sh")
+    cur = current_window()
+    now = int(time.time())
+    day = 86400
+
+    def new(state, age, **opts):
+        w = tmux("new-window", "-d", "-P", "-F", "#{window_id}", "-t", "work:")
+        wait(lambda: sidebar_panes(w))
+        if state:
+            tmux("set", "-w", "-t", w, "@claude_state", state)
+            tmux("set", "-w", "-t", w, "@claude_updated", str(now - age))
+        for k, v in opts.items():
+            tmux("set", "-w", "-t", w, "@claude_" + k, v)
+        return w
+
+    def button():
+        return next((i for i, l in enumerate(sidebar_lines()) if "close" in l and "stale" in l), None)
+
+    old_done = new("done", 2 * day)
+    old_todo = new("done", day + 60, verdict="followup")
+    old_unread = new("review", 3 * day)
+    fresh = new("done", day - 600)
+    old_needs = new("needs", 5 * day)
+    old_sched = new("done", 5 * day, sched_owned="1")
+    plain = new(None, 0)
+    # The window you are on is never closed, however old.
+    tmux("set", "-w", "-t", cur, "@claude_state", "done")
+    tmux("set", "-w", "-t", cur, "@claude_updated", str(now - 9 * day))
+    stale = {old_done, old_todo, old_unread}
+    kept = {fresh, old_needs, old_sched, plain, cur}
+    try:
+        listed = set(subprocess.run([script, "stale", "list", fmt("work", "#{session_id}")],
+                                    env=tmux_env(), capture_output=True, text=True).stdout.split())
+        check("stale: idle a day or more, not working, needing you, on screen or scheduled",
+              listed == stale, sorted(listed))
+        check("stale: the button shows how many (default 1 day)",
+              wait(lambda: any("[× close 3 stale (1d+)]" in l for l in sidebar_lines()), 3),
+              "\n".join(sidebar_lines()))
+        c.buf = b""
+        c.click(3, button())
+        check("stale: clicking it asks first",
+              wait(lambda: b"Close 3 windows idle for a day or more" in c.buf, 3), c.buf[-300:])
+        c.send("n")
+        time.sleep(0.5)
+        check("stale: answering n keeps them all", stale <= set(windows()))
+        c.buf = b""
+        c.click(3, button())
+        wait(lambda: b"Close 3 windows" in c.buf, 3)
+        c.send("y")
+        check("stale: answering y closes the stale windows",
+              wait(lambda: not (stale & set(windows())), 4), windows())
+        check("stale: every other window is kept", kept <= set(windows()), windows())
+        check("stale: you stay on your window", current_window() == cur, current_window())
+        check("stale: the button is gone when nothing is stale",
+              wait(lambda: button() is None, 3), "\n".join(sidebar_lines()))
+
+        # A different number of days, kept after reloading the config.
+        two = new("done", 2 * day)
+        four = new("done", 4 * day)
+        subprocess.run([script, "stale", "days", "3"], env=tmux_env())
+        check("stale: days can be changed and are saved",
+              tmux("show", "-gqv", "@claude_sidebar_stale_days") == "3" and
+              open(stale_file).read().strip() == "3")
+        tmux("set", "-gu", "@claude_sidebar_stale_days")
+        tmux("source-file", CONF)
+        time.sleep(1)
+        check("stale: kept after reloading the config",
+              tmux("show", "-gqv", "@claude_sidebar_stale_days") == "3")
+        check("stale: with 3 days only the 4-day-old window counts",
+              wait(lambda: any("[× close 1 stale (3d+)]" in l for l in sidebar_lines()), 3),
+              "\n".join(sidebar_lines()))
+        c.buf = b""
+        c.click(3, button())
+        check("stale: the prompt says 3 days",
+              wait(lambda: b"Close 1 window idle for 3 days or more" in c.buf, 3), c.buf[-300:])
+        c.send("y")
+        check("stale: only that window is closed",
+              wait(lambda: four not in windows(), 4) and two in windows(), windows())
+        subprocess.run([script, "stale", "days", "1"], env=tmux_env())
+        check("stale: back to 1 day", tmux("show", "-gqv", "@claude_sidebar_stale_days") == "")
+        kept.add(two)
+    finally:
+        for w in kept - {cur}:
+            tmux("kill-window", "-t", w, check=False)
+        tmux("set", "-gu", "@claude_sidebar_stale_days", check=False)
+        if saved is None:
+            os.path.exists(stale_file) and os.remove(stale_file)
+        else:
+            open(stale_file, "w").write(saved)
+        clear_states()
 
 
 def keys_checks(c, W):

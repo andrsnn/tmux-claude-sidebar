@@ -112,8 +112,8 @@ start=$(date +%s)
 SECONDS=0
 last_stall=0
 while :; do
-  info=$(tmux display-message -p -t "$pane" "#{pane_width}|#{pane_height}|#{pane_in_mode}|#{session_id}|#{window_active}|#{session_attached}|#{@claude_sidebar_keys}|#{@claude_sidebar_sort}|#{@claude_sidebar_stall}|#{@claude_sched_file}|#{prefix}|#{session_name}" 2>/dev/null) || exit 0
-  IFS='|' read -r width height inmode sid onwin attached keysmode sortmode stall schedf prefix sess <<EOF
+  info=$(tmux display-message -p -t "$pane" "#{pane_width}|#{pane_height}|#{pane_in_mode}|#{session_id}|#{window_active}|#{session_attached}|#{@claude_sidebar_keys}|#{@claude_sidebar_sort}|#{@claude_sidebar_stall}|#{@claude_sched_file}|#{prefix}|#{@claude_sidebar_stale_days}|#{session_name}" 2>/dev/null) || exit 0
+  IFS='|' read -r width height inmode sid onwin attached keysmode sortmode stall schedf prefix staledays sess <<EOF
 $info
 EOF
   # A stray scroll or drag can put the sidebar in copy mode, which freezes it.
@@ -128,6 +128,7 @@ EOF
   [ -n "$width" ] || width=30
   [ -n "$height" ] || height=40
   case "$stall" in ''|*[!0-9]*) stall=20 ;; esac
+  case "$staledays" in ''|*[!0-9]*|0) staledays=1 ;; esac
   inner=$((width - 1))           # never write the last column (avoids wrap)
   namew=$((inner - 22))          # " NN " + name + " " + status(11) + " " + age(3) + " ×"
   [ $namew -lt 4 ] && namew=4
@@ -141,6 +142,7 @@ EOF
   # One line per window: sort key fields, then the window fields.
   rows=""
   nwin=0
+  nstale=0
   while IFS='|' read -r idx wid active state updated pid cp hash hash_at verdict sched owned name; do
     [ -n "$wid" ] || continue
     case "$updated" in ''|*[!0-9]*) updated=0 ;; esac
@@ -186,6 +188,12 @@ EOF
     fi
     # Windows a schedule opened are listed under SCHEDULED, not here.
     [ "$owned" = 1 ] && continue
+    # Stale: no status change for staledays or more (sidebar.sh stale uses
+    # the same rules when it closes them).
+    if [ "$active" != 1 ] && [ "$updated" != 0 ] &&
+       [ $((now - updated)) -ge $((staledays * 86400)) ]; then
+      case "$state" in ''|working|needs) ;; *) nstale=$((nstale + 1)) ;; esac
+    fi
     rows="$rows$tier|$key|$idx|$wid|$active|$state|$updated|$verdict|$disp|$sched|$name
 "
     nwin=$((nwin + 1))
@@ -237,6 +245,7 @@ EOF
   # Rows left for the reasons under scheduled runs, so the window and task
   # rows themselves always fit.
   spare=$((height - 3 - nwin - nsched))
+  [ "$nstale" -gt 0 ] && spare=$((spare - 1))
   pos=0
   while IFS='|' read -r tier key idx wid active state updated verdict disp sched name; do
     [ -n "$wid" ] || continue
@@ -268,6 +277,13 @@ EOF
   done <<EOF
 $sorted
 EOF
+  # A button that closes the stale windows (it asks first), when there are any.
+  if [ "$nstale" -gt 0 ]; then
+    fit_ "× close $nstale stale (${staledays}d+)" $((inner - 3))
+    F="${F%"${F##*[! ]}"}"
+    line " ${GREY}[${R}${F}${GREY}]${R}"
+    [ "$row" -le "$height" ] && map="$map $((row - 1))=c:stale"
+  fi
 
   # SCHEDULED: each task, when it runs next, and how its last run went.
   line ""

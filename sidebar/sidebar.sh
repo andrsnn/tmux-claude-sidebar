@@ -25,6 +25,11 @@
 #                                     window number (tmux's own) or the row
 #                                     in the sidebar's list
 #   sidebar.sh jump <n> <client>      go to the n-th window in the list
+#   sidebar.sh stale ask|close <client>  close the stale windows of the
+#                                     client's session (ask confirms first)
+#   sidebar.sh stale days N|load      how many days without a status change
+#                                     make a window stale (default 1)
+#   sidebar.sh stale list <session>   the stale window ids, one per line
 # POSIX sh. Never fails loudly: hooks should not spam the status line.
 
 DIR=$(cd "$(dirname "$0")" && pwd)
@@ -38,6 +43,8 @@ KEYS_FILE="$HOME/.tmux/claude-sidebar-keys"
 DIGITS_FILE="$DIR/digit-keys.conf"
 # And whether finished turns are checked by Claude (judge.py): "on" or "off".
 JUDGE_FILE="$HOME/.tmux/claude-sidebar-judge"
+# And after how many days a window with no status change counts as stale.
+STALE_FILE="$HOME/.tmux/claude-sidebar-stale-days"
 # tmux's own right-click binding, used outside the sidebar.
 RC_FILE="$DIR/right-click.conf"
 DEFAULT_WIDTH=40
@@ -166,6 +173,7 @@ click() {
       if [ "$x" -ge $((pw - 7)) ] && [ "$x" -le $((pw - 5)) ]; then set_width -2
       elif [ "$x" -ge $((pw - 4)) ]; then set_width +2
       fi ;;
+    c:stale) stale ask "$client" ;;
     k:S) toggle "$(tmux display-message -p -t "$pane" '#{session_id}')" ;;
     k:F) search "$client" ;;
     k:T) sched "$client" ;;
@@ -318,6 +326,65 @@ jump() {
   return 0
 }
 
+# Stale windows: Claude windows whose status has not changed for N days
+# (default 1). Never the window you are on, one that is working or needs you,
+# a window without Claude Code, or a scheduled run (sched.py closes those).
+stale_days() {
+  d=$(tmux show-option -gqv @claude_sidebar_stale_days)
+  case "$d" in ''|*[!0-9]*|0) d=1 ;; esac
+  echo "$d"
+}
+
+stale_list() {
+  now=$(date +%s)
+  cut=$(( $(stale_days) * 86400 ))
+  tmux list-windows -t "$1" -F '#{window_id}|#{window_active}|#{@claude_state}|#{@claude_updated}|#{@claude_sched_owned}' 2>/dev/null |
+    while IFS='|' read -r wid active state updated owned; do
+      [ "$active" = 1 ] && continue
+      [ "$owned" = 1 ] && continue
+      case "$state" in ''|working|needs) continue ;; esac
+      case "$updated" in ''|*[!0-9]*) continue ;; esac
+      [ $((now - updated)) -ge "$cut" ] && echo "$wid"
+    done
+  return 0
+}
+
+stale() {
+  what="$1" arg="$2"
+  case "$what" in
+    list) stale_list "$arg" ;;
+    ask)
+      sess=$(tmux display -p -c "$arg" '#{session_id}' 2>/dev/null) || return 0
+      n=$(stale_list "$sess" | grep -c .)
+      d=$(stale_days)
+      if [ "$d" = 1 ]; then age="a day"; else age="$d days"; fi
+      if [ "$n" = 0 ]; then
+        tmux display-message -c "$arg" "No windows have been idle for $age or more"
+        return 0
+      fi
+      if [ "$n" = 1 ]; then count="1 window"; else count="$n windows"; fi
+      # The list is worked out again on "y", so a window you went to in the
+      # meantime is kept.
+      tmux confirm-before -t "$arg" \
+        -p "Close $count idle for $age or more, and stop everything running in them? (y/n)" \
+        "run-shell -b \"'$DIR/sidebar.sh' stale close $arg\"" ;;
+    close)
+      sess=$(tmux display -p -c "$arg" '#{session_id}' 2>/dev/null) || return 0
+      for w in $(stale_list "$sess"); do tmux kill-window -t "$w" 2>/dev/null; done
+      wake ;;
+    days)
+      case "$arg" in ''|*[!0-9]*|0) echo "usage: $0 stale days N (N >= 1)" >&2; return 0 ;; esac
+      if [ "$arg" = 1 ]; then tmux set-option -gu @claude_sidebar_stale_days
+      else tmux set-option -g @claude_sidebar_stale_days "$arg"; fi
+      mkdir -p "$(dirname "$STALE_FILE")" && echo "$arg" > "$STALE_FILE"
+      wake ;;
+    load)
+      d=$(cat "$STALE_FILE" 2>/dev/null)
+      case "$d" in ''|*[!0-9]*|0|1) ;; *) tmux set-option -g @claude_sidebar_stale_days "$d" ;; esac ;;
+  esac
+  return 0
+}
+
 judge() {
   m="$1"
   if [ "$m" = toggle ]; then
@@ -465,6 +532,7 @@ case "$cmd" in
   sched) sched "$@" ;;
   keys) keys_mode "${1:-toggle}" ;;
   jump) jump "$@" ;;
-  *) echo "usage: $0 ensure|ensure-session|ensure-all|toggle|click|guard|resize|cleanup|width|dragged|seen|sort|search|act|move|reviewed|save-right-click|wrapped|judge|sched|keys|jump" >&2; exit 2 ;;
+  stale) stale "$@" ;;
+  *) echo "usage: $0 ensure|ensure-session|ensure-all|toggle|click|guard|resize|cleanup|width|dragged|seen|sort|search|act|move|reviewed|save-right-click|wrapped|judge|sched|keys|jump|stale" >&2; exit 2 ;;
 esac
 exit 0
