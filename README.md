@@ -29,6 +29,9 @@ From the top:
     answer or decision (see "Wrapped up, or come back to it?" below).
   - `● working` (blue): Claude is busy.
   - No label: nothing is needed from you (finished and read, or not started).
+- **`[× close N stale (1d+)]`**, under the list when any window's status has
+  not changed for a day or more. Click it to close those windows (it asks
+  first).
 - **↻ SCHEDULED**: your scheduled tasks, each with its next run, and under
   it the window it last ran in with that run's status (and why, if it needs
   you). Click a task to manage it, a run line to go to that window, or
@@ -133,6 +136,14 @@ From the top:
 - **Click a window row** to switch to it. **Click a key row** to do the same as
   typing `Ctrl-b` and that key. Clicking the sidebar never moves keyboard focus
   into it.
+- **Close stale windows**: click `[× close N stale (1d+)]` under the window
+  list. tmux asks `(y/n)` first, then closes every window in this session
+  whose status has not changed for a day or more, and stops everything
+  running in them. It never closes the window you are on, a window that is
+  working or needs you, a window without Claude Code, or a scheduled run.
+  The button only shows when there is something to close. To use a
+  different number of days, run `~/.tmux/sidebar/sidebar.sh stale days 3`
+  (kept after tmux restarts, in `~/.tmux/claude-sidebar-stale-days`).
 - **Click `×`** to close that window. tmux asks `(y/n)` first, then closes the
   window and stops everything running in it (Claude Code, the shell, and their
   child processes).
