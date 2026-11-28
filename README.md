@@ -187,8 +187,8 @@ Running `./install.sh` again is safe; it replaces what it installed before.
 
 ### What install changes
 
-- **Backups first**: `~/.tmux.conf` and `~/.claude/settings.json` are copied to
-  `.bak-YYYYMMDD` (with a time added if that name is taken).
+- **Backups first**: `~/.tmux.conf`, `~/.claude/settings.json` and
+  `~/.claude.json` are copied to `.bak-YYYYMMDD` (with a time added if that name is taken).
 - **`~/.tmux/sidebar/`**: the scripts (`render.sh` draws the sidebar,
   `sidebar.sh` handles clicks and tmux hooks, `hook.sh` records Claude Code's
   state, `judge.py` is the wrapped-up check, `search.py` the search popup,
@@ -209,6 +209,13 @@ Running `./install.sh` again is safe; it replaces what it installed before.
   record each session's state on its tmux window, merged next to your
   existing hooks. They do nothing outside tmux and never fail. Also sets `preferredNotifChannel` to `terminal_bell`;
   your previous value is saved and put back by uninstall.
+- **`~/.claude.json`** (Claude Code's own config, if it exists): sets
+  `"diffSidebarOpen": false`, so Claude Code's diff panel ("N files changed",
+  or "No changes this session") does not open by itself on the right of
+  each session once Claude edits files. `/diff` still opens it. Uninstall
+  puts your previous value back, unless you have changed it since. Running
+  Claude sessions keep the old setting until they restart; closing the
+  panel with its × also turns it off.
 
 If `settings.json` is not valid JSON, or `~/.tmux.conf` has a start marker
 without an end marker, install stops without changing either file. Symlinked

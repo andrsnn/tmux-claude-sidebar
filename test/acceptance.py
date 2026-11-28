@@ -631,8 +631,9 @@ def attention_checks(c, W, ec):
         time.sleep(4.5)
         check("stall: still working while the screen changes", fmt(b, "#{@claude_state}") == "working",
               fmt(b, "#{@claude_state}"))
+        # The check runs every 5 s, so allow the stall time plus two checks.
         check("stall: idle once the screen has been still for a while",
-              wait(lambda: fmt(b, "#{@claude_state}") == "idle", 10), fmt(b, "#{@claude_state}"))
+              wait(lambda: fmt(b, "#{@claude_state}") == "idle", 20), fmt(b, "#{@claude_state}"))
     finally:
         tmux("set", "-gu", "@claude_sidebar_stall")
     clear_states()

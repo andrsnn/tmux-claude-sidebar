@@ -16,7 +16,8 @@ for f in "$TMUX_CONF" "$HOME/.claude/settings.json"; do
 done
 
 python3 -I "$HERE/lib/edit_configs.py" uninstall "$TMUX_CONF" \
-  "$HOME/.claude/settings.json" "$HOME/.tmux/claude-sidebar-state.json"
+  "$HOME/.claude/settings.json" "$HOME/.tmux/claude-sidebar-state.json" \
+  --claude-json "$HOME/.claude.json"
 
 if tmux list-sessions >/dev/null 2>&1; then
   [ -f "$HOME/.tmux/sidebar/sched.py" ] && python3 -I "$HOME/.tmux/sidebar/sched.py" stop 2>/dev/null || true

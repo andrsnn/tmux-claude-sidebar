@@ -31,7 +31,7 @@ case "$(tmux -V)" in
 esac
 
 # 1. Back up configs. Never overwrite an existing backup.
-for f in "$TMUX_CONF" "$SETTINGS"; do
+for f in "$TMUX_CONF" "$SETTINGS" "$HOME/.claude.json"; do
   [ -f "$f" ] || continue
   b="$f.bak-$(date +%Y%m%d)"
   [ -e "$b" ] && b="$b-$(date +%H%M%S)"
@@ -69,7 +69,7 @@ done
 
 # 4. ~/.tmux.conf block and Claude Code hooks.
 python3 -I "$HERE/lib/edit_configs.py" install "$TMUX_CONF" "$SETTINGS" \
-  "$HERE/lib/block.conf" "$STATE_FILE"
+  "$HERE/lib/block.conf" "$STATE_FILE" --claude-json "$HOME/.claude.json"
 
 # 5. Apply to a running tmux server, restarting sidebars on the new script.
 say ""

@@ -30,9 +30,11 @@ class EditConfigs(unittest.TestCase):
         self.sett = os.path.join(self.d, "settings.json")
         self.state = os.path.join(self.d, "state.json")
 
-    def run_ec(self, action):
+    def run_ec(self, action, claude_json=None):
         args = [sys.executable, "-I", SCRIPT, action, self.conf, self.sett]
         args += [BLOCK, self.state] if action == "install" else [self.state]
+        if claude_json:
+            args += ["--claude-json", claude_json]
         return subprocess.run(args, capture_output=True, text=True)
 
     def write(self, path, text):
@@ -118,6 +120,51 @@ class EditConfigs(unittest.TestCase):
         env["TMUX_PANE"] = "%999"   # inside tmux, but hook.sh is missing
         r = subprocess.run(["sh", "-c", cmd], input="{}", capture_output=True, text=True, env=env)
         self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+
+    def test_diff_panel_off_and_restored(self):
+        cj = os.path.join(self.d, ".claude.json")
+        self.write(cj, json.dumps({"numStartups": 3, "theme": "dark"}, indent=2))
+        self.assertEqual(self.run_ec("install", cj).returncode, 0)
+        self.assertIs(json.loads(self.read(cj))["diffSidebarOpen"], False)
+        self.assertEqual(json.loads(self.read(cj))["numStartups"], 3)
+        self.assertEqual(self.run_ec("install", cj).returncode, 0)   # idempotent
+        self.assertEqual(self.run_ec("uninstall", cj).returncode, 0)
+        self.assertEqual(json.loads(self.read(cj)), {"numStartups": 3, "theme": "dark"})
+
+    def test_diff_panel_keeps_your_value(self):
+        cj = os.path.join(self.d, ".claude.json")
+        self.write(cj, json.dumps({"diffSidebarOpen": True}))
+        self.run_ec("install", cj)
+        self.assertIs(json.loads(self.read(cj))["diffSidebarOpen"], False)
+        self.run_ec("uninstall", cj)
+        self.assertIs(json.loads(self.read(cj))["diffSidebarOpen"], True)
+        # Changed by you after install: uninstall leaves it alone.
+        self.write(cj, json.dumps({}))
+        self.run_ec("install", cj)
+        self.write(cj, json.dumps({"diffSidebarOpen": True}))
+        self.run_ec("uninstall", cj)
+        self.assertIs(json.loads(self.read(cj))["diffSidebarOpen"], True)
+
+    def test_diff_panel_on_upgrade_from_older_install(self):
+        # An install from before this setting: state file without the key.
+        cj = os.path.join(self.d, ".claude.json")
+        self.write(cj, json.dumps({"a": 1}))
+        self.write(self.sett, json.dumps({"preferredNotifChannel": "iterm2"}))
+        self.run_ec("install")                  # older install, no --claude-json
+        self.run_ec("install", cj)
+        self.assertIs(json.loads(self.read(cj))["diffSidebarOpen"], False)
+        self.assertEqual(json.loads(self.read(self.state)).get("preferredNotifChannel"), "iterm2")
+        self.run_ec("uninstall", cj)
+        self.assertEqual(json.loads(self.read(cj)), {"a": 1})
+        self.assertEqual(json.loads(self.read(self.sett)).get("preferredNotifChannel"), "iterm2")
+
+    def test_missing_or_bad_claude_json_is_left_alone(self):
+        cj = os.path.join(self.d, ".claude.json")
+        self.assertEqual(self.run_ec("install", cj).returncode, 0)
+        self.assertFalse(os.path.exists(cj))
+        self.write(cj, "{ not json")
+        self.assertEqual(self.run_ec("install", cj).returncode, 0)
+        self.assertEqual(self.read(cj), "{ not json")
 
     def test_crlf_file_gets_one_block(self):
         self.write(self.conf, USER_CONF.replace("\n", "\r\n"))

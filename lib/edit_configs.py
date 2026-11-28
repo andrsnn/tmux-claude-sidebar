@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """Edit ~/.tmux.conf and ~/.claude/settings.json for tmux-claude-sidebar.
 
-    edit_configs.py install   <tmux.conf> <settings.json> <block-file> <state-file>
-    edit_configs.py uninstall <tmux.conf> <settings.json> <state-file>
+    edit_configs.py install   <tmux.conf> <settings.json> <block-file> <state-file> [--claude-json F]
+    edit_configs.py uninstall <tmux.conf> <settings.json> <state-file> [--claude-json F]
 
 Both actions are idempotent. Both files are checked before either is
 written, and each is replaced atomically (through symlinks, so dotfiles
 managed by stow etc. keep working). If settings.json is not valid JSON, or
 ~/.tmux.conf has a start marker with no end marker, nothing is written.
 
-<state-file> remembers the user's previous preferredNotifChannel so that
-uninstall can put it back.
+<state-file> remembers the user's previous preferredNotifChannel (and
+diffSidebarOpen) so that uninstall can put them back.
+
+--claude-json is Claude Code's own config, ~/.claude.json. Install sets
+"diffSidebarOpen": false there, so Claude Code's diff panel does not open by
+itself next to the sidebar (you can still open it with /diff). It is only
+edited if it exists, and a problem reading it never stops the install.
 """
 import json
 import os
@@ -192,8 +197,40 @@ def plan_settings(path, install, state_file):
     return json.dumps(data, indent=2, ensure_ascii=False) + "\n", state
 
 
+def plan_claude_json(path, install, state):
+    """New text for ~/.claude.json (or None), and whether `state` changed."""
+    raw = read(path) if path else None
+    if not raw or not raw.strip():
+        return None, False
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        print("%s: not valid JSON, left as it is" % path)
+        return None, False
+    if not isinstance(data, dict):
+        return None, False
+    changed = False
+    if install:
+        if "diffSidebarOpen" not in state:
+            state["diffSidebarOpen"] = data.get("diffSidebarOpen")
+            changed = True
+        data["diffSidebarOpen"] = False
+    elif "diffSidebarOpen" in state and data.get("diffSidebarOpen") is False:
+        # Put back what it was, unless you have changed it since.
+        prev = state["diffSidebarOpen"]
+        if prev is None:
+            data.pop("diffSidebarOpen", None)
+        else:
+            data["diffSidebarOpen"] = prev
+    new = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    return (new if json.loads(new) != json.loads(raw) else None), changed
+
+
 def main():
     a = sys.argv[1:]
+    claude_json = None
+    if len(a) >= 2 and a[-2] == "--claude-json":
+        claude_json, a = a[-1], a[:-2]
     if len(a) == 5 and a[0] == "install":
         _, conf, sett, block_file, state_file = a
         with open(block_file, encoding="utf-8") as f:
@@ -207,7 +244,17 @@ def main():
     # Plan both edits first, so a problem with either file changes nothing.
     s_text, state = plan_settings(sett, install, state_file)
     t_text, disabled = plan_tmux_conf(conf, block)
-    if state is not None:
+    if state is None:
+        try:
+            with open(state_file) as f:
+                state = json.load(f)
+        except (OSError, ValueError):
+            state = {}
+        write_state = False
+    else:
+        write_state = True
+    c_text, c_changed = plan_claude_json(claude_json, install, state)
+    if write_state or (install and c_changed):
         os.makedirs(os.path.dirname(state_file), exist_ok=True)
         with open(state_file, "w") as f:
             json.dump(state, f)
@@ -215,10 +262,15 @@ def main():
         write_atomic(sett, s_text)
     if t_text is not None:
         write_atomic(conf, t_text)
+    if c_text is not None:
+        write_atomic(claude_json, c_text)
     if not install and os.path.exists(state_file):
         os.remove(state_file)
     print("%s: %s" % (conf, "updated" if t_text is not None else "unchanged"))
     print("%s: %s" % (sett, "updated" if s_text is not None else "unchanged"))
+    if claude_json and c_text is not None:
+        print("%s: %s" % (claude_json, "diff panel no longer opens by itself" if install
+                          else "diff panel setting restored"))
     if disabled:
         print("Disabled these lines in %s (they conflict with the theme or window"
               " naming; uninstall.sh turns them back on):" % conf)
